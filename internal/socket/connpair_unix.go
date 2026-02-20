@@ -18,6 +18,9 @@ func ConnPair() (c1, c2 net.Conn, err error) {
 		return nil, nil, fmt.Errorf("syscall.Socketpair returned error: %w", err)
 	}
 
+	syscall.CloseOnExec(fds[0])
+	syscall.CloseOnExec(fds[1])
+
 	f1 := os.NewFile(uintptr(fds[0]), "connpair")
 	f2 := os.NewFile(uintptr(fds[1]), "connpair")
 

@@ -72,7 +72,8 @@ type Config struct {
 	OverrideLogger *log.Logger
 }
 
-// Clone creates a deep copy of the Config.
+// Clone creates a copy of the Config. TransportModuleBin is shared
+// (not deep-copied) since the binary is read-only after loading.
 func (c *Config) Clone() *Config {
 	if c == nil {
 		return nil

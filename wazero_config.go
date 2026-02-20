@@ -240,6 +240,13 @@ func getGlobalCompilationCache() wazero.CompilationCache {
 // SetGlobalCompilationCache sets the global CompilationCache for the WebAssembly
 // runtime. This is useful for sharing the cache between multiple WebAssembly
 // modules and must be called before any WebAssembly module is instantiated.
+//
+// This function must be called before getGlobalCompilationCache is ever
+// invoked (i.e., before any WebAssembly module is created), otherwise
+// the provided cache will be ignored because sync.Once has already fired.
 func SetGlobalCompilationCache(cache wazero.CompilationCache) {
 	globalCompilationCache = cache
+	// Reset the Once so the next call to getGlobalCompilationCache will
+	// observe the newly set cache and skip the default initialization.
+	globalCompilationCacheOnce = sync.Once{}
 }

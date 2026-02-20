@@ -33,6 +33,7 @@ func (c *core) InsertConn(conn net.Conn) (fd int32, err error) {
 			return 0, fmt.Errorf("water: (*wazero.Module).InsertOSFile returned false")
 		}
 		if key <= 0 {
+			f.Close()
 			return key, fmt.Errorf("water: (*wazero.Module).InsertOSFile returned invalid key")
 		}
 		return key, nil

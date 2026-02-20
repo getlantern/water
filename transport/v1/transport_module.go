@@ -759,7 +759,11 @@ func (tm *TransportModule) PushConn(conn net.Conn) (fd int32, err error) {
 
 	tm.managedConnsMutex.Lock()
 	if int(fd) >= len(tm.managedConns) {
-		grown := make([]net.Conn, fd+1)
+		newCap := len(tm.managedConns) * 2
+		if int(fd) >= newCap {
+			newCap = int(fd) + 1
+		}
+		grown := make([]net.Conn, newCap)
 		copy(grown, tm.managedConns)
 		tm.managedConns = grown
 	}
