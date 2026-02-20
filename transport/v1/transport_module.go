@@ -757,17 +757,27 @@ func (tm *TransportModule) PushConn(conn net.Conn) (fd int32, err error) {
 		return wasip1.EncodeWATERError(syscall.EBADF), err // Cannot push a connection
 	}
 
+	if fd < 0 {
+		return wasip1.EncodeWATERError(syscall.EBADF), fmt.Errorf("water: invalid fd: %d", fd)
+	}
+
 	tm.managedConnsMutex.Lock()
-	if int(fd) >= len(tm.managedConns) {
-		newCap := len(tm.managedConns) * 2
-		if int(fd) >= newCap {
-			newCap = int(fd) + 1
+	idx := int(fd)
+	if idx >= len(tm.managedConns) {
+		newCap := len(tm.managedConns)
+		if newCap == 0 {
+			newCap = idx + 1
+		} else {
+			newCap *= 2
+			if idx >= newCap {
+				newCap = idx + 1
+			}
 		}
 		grown := make([]net.Conn, newCap)
 		copy(grown, tm.managedConns)
 		tm.managedConns = grown
 	}
-	tm.managedConns[fd] = conn
+	tm.managedConns[idx] = conn
 	tm.managedConnsMutex.Unlock()
 
 	return fd, nil
