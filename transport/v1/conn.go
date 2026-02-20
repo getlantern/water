@@ -57,14 +57,9 @@ func dialFixed(core water.Core) (c water.Conn, err error) {
 		return nil, err
 	}
 
-	reverseCallerConn, callerConn, err := socket.TCPConnPair()
-	// wasmCallerConn, conn.uoConn, err = socket.TCPConnPair()
+	reverseCallerConn, callerConn, err := socket.ConnPair()
 	if err != nil {
-		if reverseCallerConn == nil || callerConn == nil {
-			return nil, fmt.Errorf("water: socket.TCPConnPair returned error: %w", err)
-		} else { // likely due to Close() call errored
-			log.LErrorf(core.Logger(), "water: socket.TCPConnPair returned error: %v", err)
-		}
+		return nil, fmt.Errorf("water: socket.ConnPair returned error: %w", err)
 	}
 	conn.callerConn = callerConn
 
@@ -111,14 +106,9 @@ func dial(core water.Core, network, address string) (c water.Conn, err error) {
 		return nil, err
 	}
 
-	reverseCallerConn, callerConn, err := socket.TCPConnPair()
-	// wasmCallerConn, conn.uoConn, err = socket.TCPConnPair()
+	reverseCallerConn, callerConn, err := socket.ConnPair()
 	if err != nil {
-		if reverseCallerConn == nil || callerConn == nil {
-			return nil, fmt.Errorf("water: socket.TCPConnPair returned error: %w", err)
-		} else { // likely due to Close() call errored
-			log.LErrorf(core.Logger(), "water: socket.TCPConnPair returned error: %v", err)
-		}
+		return nil, fmt.Errorf("water: socket.ConnPair returned error: %w", err)
 	}
 	conn.callerConn = callerConn
 
@@ -155,15 +145,9 @@ func accept(core water.Core) (c water.Conn, err error) {
 		return nil, err
 	}
 
-	reverseCallerConn, callerConn, err := socket.TCPConnPair()
+	reverseCallerConn, callerConn, err := socket.ConnPair()
 	if err != nil {
-		if reverseCallerConn == nil || callerConn == nil {
-			return nil, fmt.Errorf("water: socket.TCPConnPair returned error: %w", err)
-		} else { // likely due to Close() call errored
-			log.LErrorf(core.Logger(), "water: socket.TCPConnPair returned error: %v", err)
-		}
-	} else if reverseCallerConn == nil || callerConn == nil {
-		return nil, errors.New("water: socket.TCPConnPair returned nil")
+		return nil, fmt.Errorf("water: socket.ConnPair returned error: %w", err)
 	}
 
 	conn.callerConn = callerConn

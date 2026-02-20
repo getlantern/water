@@ -17,6 +17,13 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
+var iovBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 256)
+		return &buf
+	},
+}
+
 // TransportModule acts like a "managed core". It was build to provide WebAssembly
 // Transport Module API-facing functions and utilities that are exclusive to
 // version 0.
@@ -96,7 +103,7 @@ type TransportModule struct {
 		controlPipe *CtrlPipe
 	}
 
-	managedConns      map[int32]net.Conn // the conn we want to keep alive
+	managedConns      []net.Conn // indexed by fd; nil entry means not managed
 	managedConnsMutex sync.RWMutex
 
 	deferOnce     sync.Once
@@ -109,7 +116,7 @@ type TransportModule struct {
 func UpgradeCore(core water.Core) *TransportModule {
 	watm := &TransportModule{
 		core:          core,
-		managedConns:  make(map[int32]net.Conn),
+		managedConns:  make([]net.Conn, 0, 8),
 		deferredFuncs: make([]func(), 0),
 	}
 
@@ -229,20 +236,17 @@ func (tm *TransportModule) Cancel(timeout time.Duration) error {
 
 // Clean up the Transport Module by closing all connections pushed into the Transport Module.
 func (tm *TransportModule) Cleanup() {
-	// clean up pushed files
-	var keyList []int32
+	// clean up pushed connections
 	tm.managedConnsMutex.Lock()
-	for k, v := range tm.managedConns {
+	for i, v := range tm.managedConns {
 		if v != nil {
 			if err := v.Close(); err != nil {
 				log.LErrorf(tm.Core().Logger(), "water: closing pushed connection failed: %v", err)
 			}
+			tm.managedConns[i] = nil
 		}
-		keyList = append(keyList, k)
 	}
-	for _, k := range keyList {
-		delete(tm.managedConns, k)
-	}
+	tm.managedConns = nil
 	tm.managedConnsMutex.Unlock()
 
 	// clean up deferred functions
@@ -369,14 +373,10 @@ func (tm *TransportModule) ExitedWith() error {
 func (tm *TransportModule) GetManagedConns(fd int32) net.Conn {
 	tm.managedConnsMutex.RLock()
 	defer tm.managedConnsMutex.RUnlock()
-	if tm.managedConns == nil {
+	if int(fd) < 0 || int(fd) >= len(tm.managedConns) {
 		return nil
 	}
-	if v, ok := tm.managedConns[fd]; ok {
-		return v
-	}
-
-	return nil
+	return tm.managedConns[fd]
 }
 
 // Initialize initializes the WASMv0 runtime by getting all the exported functions from
@@ -644,21 +644,25 @@ func (tm *TransportModule) LinkNetworkInterface(dialer *networkDialer, listener 
 			var n int
 			var err error
 
-			networkStrBuf := make([]byte, 256)
-			n, err = tm.Core().ReadIovs(networkIovs, networkIovsLen, networkStrBuf)
+			networkBufPtr := iovBufPool.Get().(*[]byte)
+			n, err = tm.Core().ReadIovs(networkIovs, networkIovsLen, *networkBufPtr)
 			if err != nil {
+				iovBufPool.Put(networkBufPtr)
 				log.LErrorf(tm.Core().Logger(), "water: ReadIovs: %v", err)
 				return wasip1.EncodeWATERError(syscall.EINVAL) // invalid argument
 			}
-			network = string(networkStrBuf[:n])
+			network = string((*networkBufPtr)[:n])
+			iovBufPool.Put(networkBufPtr)
 
-			addressStrBuf := make([]byte, 256)
-			n, err = tm.Core().ReadIovs(addressIovs, addressIovsLen, addressStrBuf)
+			addressBufPtr := iovBufPool.Get().(*[]byte)
+			n, err = tm.Core().ReadIovs(addressIovs, addressIovsLen, *addressBufPtr)
 			if err != nil {
+				iovBufPool.Put(addressBufPtr)
 				log.LErrorf(tm.Core().Logger(), "water: ReadIovs: %v", err)
 				return wasip1.EncodeWATERError(syscall.EINVAL) // invalid argument
 			}
-			address = string(addressStrBuf[:n])
+			address = string((*addressBufPtr)[:n])
+			iovBufPool.Put(addressBufPtr)
 
 			conn, err := dialer.Dial(network, address)
 			if err != nil {
@@ -754,6 +758,11 @@ func (tm *TransportModule) PushConn(conn net.Conn) (fd int32, err error) {
 	}
 
 	tm.managedConnsMutex.Lock()
+	if int(fd) >= len(tm.managedConns) {
+		grown := make([]net.Conn, fd+1)
+		copy(grown, tm.managedConns)
+		tm.managedConns = grown
+	}
 	tm.managedConns[fd] = conn
 	tm.managedConnsMutex.Unlock()
 
@@ -773,7 +782,7 @@ func (tm *TransportModule) StartWorker() error {
 	}
 
 	// create control pipe connection pair
-	ctrlConnR, ctrlConnW, err := socket.TCPConnPair()
+	ctrlConnR, ctrlConnW, err := socket.ConnPair()
 	if err != nil {
 		return fmt.Errorf("water: creating cancel pipe failed: %w", err)
 	}

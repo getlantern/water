@@ -91,7 +91,7 @@ type TransportModule struct {
 	}
 
 	// gcfixOnce  sync.Once
-	pushedConn      map[int32]net.Conn // the conn we want to keep alive
+	pushedConn      []net.Conn // indexed by fd; nil entry means not managed
 	pushedConnMutex sync.RWMutex
 
 	deferOnce     sync.Once
@@ -104,7 +104,7 @@ type TransportModule struct {
 func UpgradeCore(core water.Core) *TransportModule {
 	wasm := &TransportModule{
 		core:          core,
-		pushedConn:    make(map[int32]net.Conn),
+		pushedConn:    make([]net.Conn, 0, 8),
 		deferredFuncs: make([]func(), 0),
 	}
 
@@ -218,20 +218,17 @@ func (tm *TransportModule) Cancel() error {
 
 // Clean up the Transport Module by closing all connections pushed into the Transport Module.
 func (tm *TransportModule) Cleanup() {
-	// clean up pushed files
-	var keyList []int32
+	// clean up pushed connections
 	tm.pushedConnMutex.Lock()
-	for k, v := range tm.pushedConn {
+	for i, v := range tm.pushedConn {
 		if v != nil {
 			if err := v.Close(); err != nil {
 				log.LErrorf(tm.Core().Logger(), "water: closing pushed connection failed: %v", err)
 			}
+			tm.pushedConn[i] = nil
 		}
-		keyList = append(keyList, k)
 	}
-	for _, k := range keyList {
-		delete(tm.pushedConn, k)
-	}
+	tm.pushedConn = nil
 	tm.pushedConnMutex.Unlock()
 
 	// clean up deferred functions
@@ -628,7 +625,7 @@ func (tm *TransportModule) Worker() error {
 	}
 
 	// create cancel pipe
-	cancelConnR, cancelConnW, err := socket.TCPConnPair()
+	cancelConnR, cancelConnW, err := socket.ConnPair()
 	if err != nil {
 		return fmt.Errorf("water: creating cancel pipe failed: %w", err)
 	}
@@ -715,6 +712,11 @@ func (tm *TransportModule) PushConn(conn net.Conn) (fd int32, err error) {
 	}
 
 	tm.pushedConnMutex.Lock()
+	if int(fd) >= len(tm.pushedConn) {
+		grown := make([]net.Conn, fd+1)
+		copy(grown, tm.pushedConn)
+		tm.pushedConn = grown
+	}
 	tm.pushedConn[fd] = conn
 	tm.pushedConnMutex.Unlock()
 
@@ -724,12 +726,8 @@ func (tm *TransportModule) PushConn(conn net.Conn) (fd int32, err error) {
 func (tm *TransportModule) GetPushedConn(fd int32) net.Conn {
 	tm.pushedConnMutex.RLock()
 	defer tm.pushedConnMutex.RUnlock()
-	if tm.pushedConn == nil {
+	if int(fd) < 0 || int(fd) >= len(tm.pushedConn) {
 		return nil
 	}
-	if v, ok := tm.pushedConn[fd]; ok {
-		return v
-	}
-
-	return nil
+	return tm.pushedConn[fd]
 }

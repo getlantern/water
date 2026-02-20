@@ -22,8 +22,21 @@ func (c *core) InsertConn(conn net.Conn) (fd int32, err error) {
 			return key, fmt.Errorf("water: (*wazero.Module).InsertTCPConn returned invalid key")
 		}
 		return key, nil
+	case *net.UnixConn:
+		f, err := conn.File()
+		if err != nil {
+			return 0, fmt.Errorf("water: (*net.UnixConn).File returned error: %w", err)
+		}
+		key, ok := c.instance.InsertOSFile(f)
+		if !ok {
+			f.Close()
+			return 0, fmt.Errorf("water: (*wazero.Module).InsertOSFile returned false")
+		}
+		if key <= 0 {
+			return key, fmt.Errorf("water: (*wazero.Module).InsertOSFile returned invalid key")
+		}
+		return key, nil
 	default:
-		// TODO: support other types of connections as much as possible
 		return 0, fmt.Errorf("water: unsupported connection type: %T", conn)
 	}
 }

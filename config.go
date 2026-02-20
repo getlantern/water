@@ -78,11 +78,8 @@ func (c *Config) Clone() *Config {
 		return nil
 	}
 
-	wasmClone := make([]byte, len(c.TransportModuleBin))
-	copy(wasmClone, c.TransportModuleBin)
-
 	return &Config{
-		TransportModuleBin:     wasmClone,
+		TransportModuleBin:     c.TransportModuleBin, // share the slice; binary is read-only after loading
 		TransportModuleConfig:  c.TransportModuleConfig,
 		NetworkDialerFunc:      c.NetworkDialerFunc,
 		DialedAddressValidator: c.DialedAddressValidator,

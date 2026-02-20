@@ -221,27 +221,25 @@ func (wrcf *WazeroRuntimeConfigFactory) SetCompilationCache(cache wazero.Compila
 }
 
 var globalCompilationCache wazero.CompilationCache
-var globalCompilationCacheMutex = new(sync.Mutex)
+var globalCompilationCacheOnce sync.Once
 
 func getGlobalCompilationCache() wazero.CompilationCache {
-	globalCompilationCacheMutex.Lock()
-	defer globalCompilationCacheMutex.Unlock()
-
-	if globalCompilationCache == nil {
+	globalCompilationCacheOnce.Do(func() {
+		if globalCompilationCache != nil {
+			return // already set via SetGlobalCompilationCache
+		}
 		var err error
 		globalCompilationCache, err = wazero.NewCompilationCacheWithDir(fmt.Sprintf("%s%c%s", os.TempDir(), os.PathSeparator, "waterwazerocache"))
 		if err != nil {
 			panic(err)
 		}
-	}
+	})
 	return globalCompilationCache
 }
 
 // SetGlobalCompilationCache sets the global CompilationCache for the WebAssembly
 // runtime. This is useful for sharing the cache between multiple WebAssembly
-// modules and should be called before any WebAssembly module is instantiated.
+// modules and must be called before any WebAssembly module is instantiated.
 func SetGlobalCompilationCache(cache wazero.CompilationCache) {
-	globalCompilationCacheMutex.Lock()
 	globalCompilationCache = cache
-	globalCompilationCacheMutex.Unlock()
 }
