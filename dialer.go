@@ -32,7 +32,7 @@ type Dialer interface {
 	mustEmbedUnimplementedDialer()
 }
 
-type newDialerFunc func(context.Context, *Config) (Dialer, error)
+type newDialerFunc func(context.Context, *Config, Core) (Dialer, error)
 
 var (
 	knownDialerVersions = make(map[string]newDialerFunc)
@@ -117,10 +117,11 @@ func NewDialerWithContext(ctx context.Context, c *Config) (Dialer, error) {
 	// in a more organized way.
 	for exportName := range core.Exports() {
 		if f, ok := knownDialerVersions[exportName]; ok {
-			return f(ctx, c)
+			return f(ctx, c, core)
 		}
 	}
 
+	core.Close()
 	return nil, ErrDialerVersionNotFound
 }
 
@@ -144,7 +145,7 @@ type FixedDialer interface {
 	mustEmbedUnimplementedFixedDialer()
 }
 
-type newFixedDialerFunc func(context.Context, *Config) (FixedDialer, error)
+type newFixedDialerFunc func(context.Context, *Config, Core) (FixedDialer, error)
 
 var (
 	knownFixedDialerVersions = make(map[string]newFixedDialerFunc)
@@ -190,9 +191,10 @@ func NewFixedDialerWithContext(ctx context.Context, cfg *Config) (FixedDialer, e
 	// Sniff the version of the dialer
 	for exportName := range core.Exports() {
 		if f, ok := knownFixedDialerVersions[exportName]; ok {
-			return f(ctx, cfg)
+			return f(ctx, cfg, core)
 		}
 	}
 
+	core.Close()
 	return nil, ErrFixedDialerVersionNotFound
 }

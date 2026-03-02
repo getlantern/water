@@ -36,7 +36,7 @@ type Listener interface {
 	mustEmbedUnimplementedListener()
 }
 
-type newListenerFunc func(context.Context, *Config) (Listener, error)
+type newListenerFunc func(context.Context, *Config, Core) (Listener, error)
 
 var (
 	knownListenerVersions = make(map[string]newListenerFunc)
@@ -109,9 +109,10 @@ func NewListenerWithContext(ctx context.Context, c *Config) (Listener, error) {
 	// in a more organized way.
 	for exportName := range core.Exports() {
 		if f, ok := knownListenerVersions[exportName]; ok {
-			return f(ctx, c)
+			return f(ctx, c, core)
 		}
 	}
 
+	core.Close()
 	return nil, ErrListenerVersionNotFound
 }

@@ -26,14 +26,17 @@ type Dialer struct {
 //
 // Deprecated: use [NewDialerWithContext] instead.
 func NewDialer(c *water.Config) (water.Dialer, error) {
-	return NewDialerWithContext(context.Background(), c)
+	return NewDialerWithContext(context.Background(), c, nil)
 }
 
 // NewDialerWithContext creates a new [water.Dialer] from the given [water.Config]
 // with the given [context.Context].
 //
 // The context is used as the default context for call to [Dialer.Dial].
-func NewDialerWithContext(ctx context.Context, c *water.Config) (water.Dialer, error) {
+func NewDialerWithContext(ctx context.Context, c *water.Config, core water.Core) (water.Dialer, error) {
+	if core != nil {
+		core.Close()
+	}
 	return &Dialer{
 		config: c.Clone(),
 		ctx:    ctx,

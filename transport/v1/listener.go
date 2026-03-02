@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 
 	"github.com/refraction-networking/water"
@@ -22,6 +23,9 @@ type Listener struct {
 	closed *atomic.Bool
 	ctx    context.Context
 
+	prewarmedMu sync.Mutex
+	prewarmed   water.Core
+
 	water.UnimplementedListener // embedded to ensure forward compatibility
 }
 
@@ -29,10 +33,7 @@ type Listener struct {
 //
 // Deprecated: use [NewListenerWithContext] instead.
 func NewListener(c *water.Config) (water.Listener, error) {
-	return &Listener{
-		config: c.Clone(),
-		closed: new(atomic.Bool),
-	}, nil
+	return NewListenerWithContext(context.Background(), c, nil)
 }
 
 // NewListenerWithContext creates a new [water.Listener] from the [water.Config] with
@@ -44,11 +45,12 @@ func NewListener(c *water.Config) (water.Listener, error) {
 // function call will return with an error.
 // Call [water.WazeroRuntimeConfigFactory.SetCloseOnContextDone] with false to
 // disable this behavior.
-func NewListenerWithContext(ctx context.Context, c *water.Config) (water.Listener, error) {
+func NewListenerWithContext(ctx context.Context, c *water.Config, core water.Core) (water.Listener, error) {
 	return &Listener{
-		config: c.Clone(),
-		closed: new(atomic.Bool),
-		ctx:    ctx,
+		config:    c.Clone(),
+		closed:    new(atomic.Bool),
+		ctx:       ctx,
+		prewarmed: core,
 	}, nil
 }
 
@@ -96,9 +98,18 @@ func (l *Listener) AcceptWATER() (water.Conn, error) {
 
 	var core water.Core
 	var err error
-	core, err = water.NewCoreWithContext(l.ctx, l.config)
-	if err != nil {
-		return nil, err
+
+	l.prewarmedMu.Lock()
+	if l.prewarmed != nil {
+		core = l.prewarmed
+		l.prewarmed = nil
+		l.prewarmedMu.Unlock()
+	} else {
+		l.prewarmedMu.Unlock()
+		core, err = water.NewCoreWithContext(l.ctx, l.config)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return accept(core)

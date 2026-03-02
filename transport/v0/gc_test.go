@@ -40,7 +40,7 @@ func TestConn_GC(t *testing.T) {
 	config := &water.Config{
 		TransportModuleBin: wasmPlain,
 	}
-	dialer, err := v0.NewDialerWithContext(context.Background(), config)
+	dialer, err := v0.NewDialerWithContext(context.Background(), config, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

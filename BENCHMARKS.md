@@ -107,6 +107,110 @@ For light usage (occasional browsing, messaging), the battery impact would be mo
 - **Monitor GC pauses**: The 93 allocs/roundtrip will generate GC pressure. Profiling on target Android devices is recommended.
 - **Throughput ceiling**: Plan for ~1 MB/s per WATER connection on mid-range Android devices. Applications needing higher throughput should either use multiple connections or consider native transport implementations for performance-critical paths.
 
+## Remote Benchmarks (Real Network)
+
+The localhost benchmarks above show WASM overhead dominating (~1.1ms per roundtrip), but on localhost the network RTT is negligible (~18us). To understand real-world impact, we run the same comparisons over an actual network where WASM overhead competes with real RTT.
+
+### Remote Test Setup
+
+- **Server**: Digital Ocean `s-1vcpu-1gb` droplet in SFO3 (Ubuntu 24.04)
+- **Client**: macOS M4 Pro (same as localhost benchmarks)
+- **Network**: San Francisco region, ~36ms RTT
+- **Services on droplet**: ss-server (:8388) + echo server (:8080)
+- **Local**: ss-tunnel connects to remote ss-server (native SS path)
+
+```
+Local machine (macOS)              DO Droplet (SFO3)
+┌──────────────────┐               ┌──────────────────┐
+│ Benchmark runner │──WATER+SS────▶│ ss-server (:8388)│
+│                  │──native SS───▶│                  │
+│                  │──raw TCP─────▶│ echo     (:8080) │
+└──────────────────┘               └──────────────────┘
+```
+
+### Remote Results
+
+#### Latency (4-byte ping-pong roundtrip)
+
+| Path                       | Latency      | vs Raw TCP |
+|----------------------------|-------------|------------|
+| Raw TCP                    | 35.9 ms     | 1x         |
+| Native shadowsocks         | 37.3 ms     | 1.04x      |
+| WATER + shadowsocks (WASM) | 37.8 ms     | 1.05x      |
+
+#### Throughput (1 KB echo roundtrip)
+
+| Path                       | Latency/op  | MB/s  | Allocs/op |
+|----------------------------|-------------|-------|-----------|
+| Raw TCP                    | 35.5 ms     | 0.03  | 0         |
+| Native shadowsocks         | 36.1 ms     | 0.03  | 0         |
+| WATER + shadowsocks (WASM) | 37.0 ms     | 0.03  | 93        |
+
+#### Web Browsing Simulation (5-9 sequential 1KB resource fetches per page)
+
+| Path                       | Time per page | vs Raw TCP |
+|----------------------------|--------------|------------|
+| Raw TCP (concurrent)       | 88 ms        | 1x         |
+| Native SS (concurrent)     | 92 ms        | 1.05x      |
+| WATER + SS (sequential)    | 289 ms       | 3.3x       |
+
+Note: WATER uses sequential fetches on a single connection (reflecting typical Lantern tunnel usage). Native SS and TCP use concurrent connections per resource (browser-like).
+
+#### Connection Setup (WASM instantiation + network handshake)
+
+| Path                       | Time per connection | Memory    | Allocs |
+|----------------------------|--------------------:|----------:|-------:|
+| WATER + shadowsocks        | 42.0 ms             | ~2 MB     | 9,019  |
+| Raw TCP                    | 38.1 ms             | 668 B     | 14     |
+
+### Analysis
+
+**The ~1ms WASM overhead is negligible over a real network.** On localhost, WATER adds 17.6x latency over native SS. Over a 36ms network, it adds only 1.3% (37.8ms vs 37.3ms). The network RTT completely dominates.
+
+**Connection setup is the real cost.** Each WATER connection takes ~42ms and allocates ~2MB. For the web browsing simulation, creating a new WATER connection per resource (sequential due to WASM serialization) makes WATER 3.3x slower than concurrent raw TCP. This confirms that **connection reuse is critical** for WATER performance.
+
+**WASM module stability limits throughput testing.** The shadowsocks WASM module crashes with "input/output error" on echo payloads above ~4KB, even on a single connection. This is the same instability observed with `plain.wasm` on localhost and limits our ability to benchmark large transfers through WATER.
+
+### What This Means for Lantern
+
+For Lantern's typical usage pattern (single persistent WATER tunnel, multiplexed HTTP traffic):
+- Individual request latency overhead is **imperceptible** (~1-2ms on a 36ms RTT)
+- The bottleneck is connection establishment, not per-packet overhead
+- Pre-warming connections and connection pooling eliminate the main cost
+- The WASM stability issue with larger payloads needs investigation for production use
+
+## Pre-warmed Core Optimization
+
+The version detection in `NewDialerWithContext` creates a `Core` (wazero Runtime + CompileModule) just to read exports, then discards it. The v1 factory's `DialContext` then creates *another* Core for the actual connection. By passing the detection Core through to the v1 factory and reusing it on the first dial, we eliminate this double-creation.
+
+### Before (baseline)
+
+| Metric              | Connection Setup | Roundtrip (1KB) | Latency (4B) |
+|---------------------|----------------:|----------------:|--------------:|
+| WATER+SS            | 5.24 ms         | 1,126 us        | 1,147 us      |
+| Memory/op           | ~2 MB           | 2,226 B         | -             |
+| Allocs/op           | 9,014           | 93              | 93            |
+
+### After (pre-warmed Core reuse)
+
+| Metric              | Connection Setup | Roundtrip (1KB) | Latency (4B) |
+|---------------------|----------------:|----------------:|--------------:|
+| WATER+SS            | 2.93 ms         | 1,043 us        | 1,105 us      |
+| Memory/op           | ~1.5 MB         | 2,228 B         | 2,238 B       |
+| Allocs/op           | 5,796           | 93              | 93            |
+
+### Impact
+
+| Metric              | Change     |
+|---------------------|-----------|
+| Connection setup time | **-44%** (5.24 ms -> 2.93 ms) |
+| Setup memory         | **-25%** (~2 MB -> ~1.5 MB) |
+| Setup allocations    | **-36%** (9,014 -> 5,796) |
+| Roundtrip latency    | ~-7% (within noise) |
+| Per-packet allocs    | unchanged (93) |
+
+The connection setup improvement directly benefits the web browsing simulation where per-connection overhead dominates. Roundtrip and latency are within normal variance — the optimization only eliminates redundant setup work, not per-packet overhead.
+
 ## Reproducing
 
 Run the end-to-end benchmarks (requires `ss-server` and `ss-tunnel` from shadowsocks-libev):
@@ -126,6 +230,11 @@ go test -bench=. -benchmem -benchtime=5s ./transport/v1/
 
 # TCP reference baseline
 go test -bench=BenchmarkTCPReference -benchmem -benchtime=5s -tags=benchtcpref ./transport/v1/
+
+# Remote benchmarks (requires doctl, a DO account, and ss-tunnel)
+./scripts/setup-remote.sh up
+REMOTE_HOST=<droplet-ip> go test -tags=remote -bench=. -benchmem -benchtime=3s -count=1
+./scripts/setup-remote.sh down
 ```
 
 The shadowsocks WASM module is loaded from `../wateringhole/protocols/shadowsocks/v1.0.0/shadowsocks_client.wasm`. Clone [getlantern/wateringhole](https://github.com/getlantern/wateringhole) as a sibling directory and run `git lfs pull`.
