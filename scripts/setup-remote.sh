@@ -131,7 +131,7 @@ cmd_up() {
     ssh $ssh_opts "root@$ip" bash <<'SETUP'
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
-        apt-get install -y -qq shadowsocks-libev > /dev/null 2>&1
+        apt-get install -y -qq shadowsocks-libev
         systemctl stop shadowsocks-libev 2>/dev/null || true
         systemctl disable shadowsocks-libev 2>/dev/null || true
 SETUP
@@ -142,8 +142,7 @@ SETUP
 
     # Write ss-server config
     blue "Configuring ss-server..."
-    ssh $ssh_opts "root@$ip" bash <<SSCONF
-        cat > /etc/shadowsocks-libev/bench.json <<EOF
+    ssh $ssh_opts "root@$ip" "mkdir -p /etc/shadowsocks-libev && cat > /etc/shadowsocks-libev/bench.json" <<SSCONF
 {
     "server": "0.0.0.0",
     "server_port": $SS_PORT,
@@ -151,7 +150,6 @@ SETUP
     "method": "$SS_METHOD",
     "timeout": 300
 }
-EOF
 SSCONF
 
     # Create systemd units

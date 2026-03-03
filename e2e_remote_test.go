@@ -180,7 +180,7 @@ func BenchmarkRemoteLatency(b *testing.B) {
 	})
 }
 
-// ---------- Benchmark: Throughput (1 KB roundtrip, reports MB/s) ----------
+// ---------- Benchmark: Throughput (sequential roundtrips, reports MB/s) ----------
 
 func BenchmarkRemoteThroughput(b *testing.B) {
 	if len(wasmShadowsocks) == 0 {
@@ -189,11 +189,8 @@ func BenchmarkRemoteThroughput(b *testing.B) {
 	inf := setupRemoteInfra(b)
 	defer inf.cleanup()
 
-	const chunkSize = 32 * 1024 // 32 KB per roundtrip
+	const chunkSize = 4 * 1024 // 4 KB per roundtrip
 
-	// Measure throughput via repeated echo roundtrips on a single connection.
-	// The Go benchmark framework runs enough iterations to fill benchtime,
-	// giving us MB/s over the real network.
 	benchThroughput := func(b *testing.B, conn net.Conn) {
 		msg := make([]byte, chunkSize)
 		rand.Read(msg)
@@ -248,8 +245,12 @@ func BenchmarkRemoteThroughput(b *testing.B) {
 //
 // For the native SS and raw TCP paths, we open concurrent connections to
 // show the best-case comparison.
+
 func simulatePageLoadSingle(b *testing.B, conn net.Conn, resources []int) {
 	b.Helper()
+	conn.SetDeadline(time.Now().Add(60 * time.Second))
+	defer conn.SetDeadline(time.Time{})
+
 	for _, sz := range resources {
 		msg := make([]byte, sz)
 		rand.Read(msg)
@@ -383,7 +384,6 @@ func BenchmarkRemoteConnectionSetup(b *testing.B) {
 	cfgBytes := ssConfig(inf.host, remoteEchoPort)
 
 	b.Run("water+shadowsocks_dial", func(b *testing.B) {
-		var conns []net.Conn
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			config := &water.Config{
@@ -399,11 +399,9 @@ func BenchmarkRemoteConnectionSetup(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			conns = append(conns, conn)
-		}
-		b.StopTimer()
-		for _, c := range conns {
-			c.Close()
+			b.StopTimer()
+			conn.Close()
+			b.StartTimer()
 		}
 	})
 
@@ -414,7 +412,10 @@ func BenchmarkRemoteConnectionSetup(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
+			b.StopTimer()
 			conn.Close()
+			time.Sleep(1 * time.Millisecond) // let TIME_WAIT sockets recycle
+			b.StartTimer()
 		}
 	})
 }

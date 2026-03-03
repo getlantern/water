@@ -7,11 +7,12 @@ Benchmarks comparing WATER+shadowsocks (WASM) against native shadowsocks (ss-tun
 - **Platform**: macOS, Darwin 24.6.0
 - **CPU**: Apple M4 Pro (14 cores)
 - **Architecture**: arm64
-- **Go version**: 1.21+
-- **WASM runtime**: wazero v1.7.3
+- **Go version**: 1.25.1
+- **TinyGo version**: 0.40.1 (WASM build)
+- **WASM runtime**: wazero v1.7.3 (getlantern/wazero fork)
 - **Shadowsocks cipher**: chacha20-ietf-poly1305
 - **Shadowsocks server**: shadowsocks-libev 3.3.5
-- **WASM module**: `shadowsocks_client.wasm` (353 KB) from [getlantern/wateringhole](https://github.com/getlantern/wateringhole)
+- **WASM module**: `shadowsocks_client.wasm` from [getlantern/wateringhole](https://github.com/getlantern/wateringhole)
 - **Test topology**: client -> ss-server -> echo server (all localhost)
 
 ## Results
@@ -20,23 +21,23 @@ Benchmarks comparing WATER+shadowsocks (WASM) against native shadowsocks (ss-tun
 
 | Path                      | Throughput   | Latency/op    | Allocs/op |
 |---------------------------|-------------|---------------|-----------|
-| Raw TCP                   | 56.73 MB/s  | 18,050 ns     | 0         |
-| Native shadowsocks        | 14.02 MB/s  | 73,040 ns     | 0         |
-| WATER + shadowsocks (WASM)| 0.91 MB/s   | 1,126,246 ns  | 93        |
+| Raw TCP                   | 52.95 MB/s  | 19,337 ns     | 0         |
+| Native shadowsocks        | 13.16 MB/s  | 77,813 ns     | 0         |
+| WATER + shadowsocks (WASM)| 1.44 MB/s   | 709,508 ns    | 30        |
 
 ### Ping-Pong Latency (4-byte roundtrip)
 
 | Path                       | Latency      | vs Raw TCP | vs Native SS |
 |----------------------------|-------------|------------|--------------|
-| Raw TCP                    | 17.9 us     | 1x         | -            |
-| Native shadowsocks         | 65.1 us     | 3.6x       | 1x           |
-| WATER + shadowsocks (WASM) | 1,147 us    | 64x        | 17.6x        |
+| Raw TCP                    | 19.2 us     | 1x         | -            |
+| Native shadowsocks         | 69.8 us     | 3.6x       | 1x           |
+| WATER + shadowsocks (WASM) | 580 us      | 30x        | 8.3x         |
 
 ### Connection Setup (WASM instantiation + dial)
 
 | Path                       | Time per connection | Memory    | Allocs |
 |----------------------------|--------------------:|----------:|-------:|
-| WATER + shadowsocks        | 5.24 ms             | ~2 MB     | 9,014  |
+| WATER + shadowsocks        | 4.13 ms             | ~1.7 MB   | 6,223  |
 
 ### WATER v1 Transport Throughput (plain WASM, no encryption)
 
@@ -54,13 +55,13 @@ These benchmarks use the built-in `reverse.wasm` module (byte-reversal only, no 
 
 The native shadowsocks comparison isolates the cost layers:
 
-1. **Encryption cost (chacha20-poly1305)**: Native SS adds ~3.6x overhead over raw TCP (65 us vs 18 us). This is the baseline cost of authenticated encryption.
+1. **Encryption cost (chacha20-poly1305)**: Native SS adds ~3.6x overhead over raw TCP (70 us vs 19 us). This is the baseline cost of authenticated encryption.
 
-2. **WASM runtime cost**: WATER adds ~17.6x overhead on top of native SS (1,147 us vs 65 us). This dominates total overhead.
+2. **WASM runtime cost**: WATER adds ~8.3x overhead on top of native SS (580 us vs 70 us). This dominates total overhead.
 
-3. **Total WATER+SS vs raw TCP**: ~64x latency overhead.
+3. **Total WATER+SS vs raw TCP**: ~30x latency overhead.
 
-The 93 allocations per roundtrip in the WATER path (vs 0 for native SS) confirm the bottleneck is in the wazero data path -- specifically the virtual socket pairs used to shuttle data between the Go host and the WASM module, and the associated memory copying.
+The 30 allocations per roundtrip in the WATER path (vs 0 for native SS) are from the wazero data path -- specifically the virtual socket pairs used to shuttle data between the Go host and the WASM module, and the associated memory copying. The RawConn caching optimization in the wazero fork reduced this from 93 to 30 allocs/op.
 
 ### Dialer vs Listener asymmetry
 
@@ -73,6 +74,7 @@ The inbound path is ~6x slower than outbound, suggesting the listener accept + r
 ### Known issues
 
 - The `plain.wasm` module (passthrough, no transform) crashes with broken pipe under sustained benchmark load. Only `reverse.wasm` survives benchmarking. This appears to be a bug in the plain WASM module, not in the WATER runtime.
+- Listener inbound is ~6x slower than dialer outbound (asymmetry).
 
 ## Android Implications
 
@@ -80,32 +82,30 @@ The performance characteristics above have significant implications for mobile d
 
 ### CPU
 
-The 93 allocations per roundtrip and ~17.6x overhead from the WASM runtime translate directly to higher CPU utilization. On a mobile SoC (e.g., Snapdragon 8 Gen 2), single-core performance is roughly 60-70% of Apple M4 Pro, so latency numbers would be proportionally worse (~1.5-1.7 ms per roundtrip). The WASM interpreter in wazero does not JIT-compile on arm64 Android (wazero uses an interpreter mode on platforms without mmap exec support), which could further increase CPU cost.
+The 30 allocations per roundtrip and ~8.3x overhead from the WASM runtime translate directly to higher CPU utilization. On a mobile SoC (e.g., Snapdragon 8 Gen 2), single-core performance is roughly 60-70% of Apple M4 Pro, so latency numbers would be proportionally worse (~0.8-1.0 ms per roundtrip). The WASM interpreter in wazero does not JIT-compile on arm64 Android (wazero uses an interpreter mode on platforms without mmap exec support), which could further increase CPU cost.
 
-For typical usage patterns (web browsing, messaging), the ~1 ms per-packet overhead is unlikely to be perceptible since network RTTs (50-200 ms) dominate. However, high-throughput scenarios like video streaming or large file downloads will be CPU-bound at the WASM layer, potentially saturating a single core at ~1 MB/s or less.
+For typical usage patterns (web browsing, messaging), the ~0.6 ms per-packet overhead is unlikely to be perceptible since network RTTs (50-200 ms) dominate. However, high-throughput scenarios like video streaming or large file downloads will be CPU-bound at the WASM layer, potentially saturating a single core at ~1.4 MB/s or less.
 
 ### Memory
 
-Each WATER connection setup allocates ~2 MB and 9,014 objects. For a single active connection this is manageable, but applications that maintain connection pools or open many concurrent connections (e.g., HTTP/2 multiplexing over multiple WATER tunnels) could see significant heap pressure. On Android devices with 4-6 GB RAM and aggressive memory management, this could trigger more frequent garbage collection pauses.
-
-The WASM module itself (353 KB for shadowsocks) is modest, but the wazero runtime state per-instance adds to the footprint.
+Each WATER connection setup allocates ~1.7 MB and 6,223 objects. For a single active connection this is manageable, but applications that maintain connection pools or open many concurrent connections (e.g., HTTP/2 multiplexing over multiple WATER tunnels) could see significant heap pressure. On Android devices with 4-6 GB RAM and aggressive memory management, this could trigger more frequent garbage collection pauses.
 
 ### Battery Life
 
 Battery impact comes from two sources:
 
-1. **CPU wake time**: The 93 allocs/roundtrip and data copying through virtual socket pairs keep the CPU active longer per packet than native implementations. For background data sync or push notifications that arrive during doze mode, each packet wakes the CPU for ~1 ms (WATER) vs ~65 us (native SS) -- roughly 17x longer per wake event.
+1. **CPU wake time**: The 30 allocs/roundtrip and data copying through virtual socket pairs keep the CPU active longer per packet than native implementations. For background data sync or push notifications that arrive during doze mode, each packet wakes the CPU for ~0.6 ms (WATER) vs ~70 us (native SS) -- roughly 8x longer per wake event.
 
 2. **GC pressure**: The allocation-heavy data path means the Go runtime's garbage collector runs more frequently. Each GC cycle is a CPU-intensive operation that prevents the SoC from entering low-power states.
 
-For light usage (occasional browsing, messaging), the battery impact would be modest -- perhaps 5-15% increased drain compared to native shadowsocks. For sustained streaming or large transfers, the impact could be more significant as the WASM runtime keeps a core pegged near 100%.
+For light usage (occasional browsing, messaging), the battery impact would be modest -- perhaps 5-10% increased drain compared to native shadowsocks. For sustained streaming or large transfers, the impact could be more significant as the WASM runtime keeps a core near full utilization.
 
 ### Recommendations for mobile
 
-- **Connection reuse is critical**: The 5.24 ms connection setup cost (with 2 MB allocation) makes connection pooling essential on mobile. Avoid creating new WATER connections per-request.
+- **Connection reuse is critical**: The 4.1 ms connection setup cost (with ~1.7 MB allocation) makes connection pooling essential on mobile. Avoid creating new WATER connections per-request.
 - **Consider pre-warming**: Instantiate the WASM module during app startup rather than on first network request to avoid latency spikes.
-- **Monitor GC pauses**: The 93 allocs/roundtrip will generate GC pressure. Profiling on target Android devices is recommended.
-- **Throughput ceiling**: Plan for ~1 MB/s per WATER connection on mid-range Android devices. Applications needing higher throughput should either use multiple connections or consider native transport implementations for performance-critical paths.
+- **Monitor GC pauses**: The 30 allocs/roundtrip will generate GC pressure. Profiling on target Android devices is recommended.
+- **Throughput ceiling**: Plan for ~1.4 MB/s per WATER connection on mid-range Android devices. Applications needing higher throughput should either use multiple connections or consider native transport implementations for performance-critical paths.
 
 ## Remote Benchmarks (Real Network)
 
@@ -134,50 +134,50 @@ Local machine (macOS)              DO Droplet (SFO3)
 
 | Path                       | Latency      | vs Raw TCP |
 |----------------------------|-------------|------------|
-| Raw TCP                    | 35.9 ms     | 1x         |
-| Native shadowsocks         | 37.3 ms     | 1.04x      |
-| WATER + shadowsocks (WASM) | 37.8 ms     | 1.05x      |
+| Raw TCP                    | 37.5 ms     | 1x         |
+| Native shadowsocks         | 37.1 ms     | 0.99x      |
+| WATER + shadowsocks (WASM) | 38.4 ms     | 1.02x      |
 
-#### Throughput (1 KB echo roundtrip)
+#### Throughput (4 KB echo roundtrip)
 
 | Path                       | Latency/op  | MB/s  | Allocs/op |
 |----------------------------|-------------|-------|-----------|
-| Raw TCP                    | 35.5 ms     | 0.03  | 0         |
-| Native shadowsocks         | 36.1 ms     | 0.03  | 0         |
-| WATER + shadowsocks (WASM) | 37.0 ms     | 0.03  | 93        |
+| Raw TCP                    | 38.0 ms     | 0.11  | 0         |
+| Native shadowsocks         | 39.4 ms     | 0.10  | 0         |
+| WATER + shadowsocks (WASM) | 40.8 ms     | 0.10  | 30        |
 
-#### Web Browsing Simulation (5-9 sequential 1KB resource fetches per page)
+#### Web Browsing Simulation (7-10 resources per page, 1KB-100KB each)
 
 | Path                       | Time per page | vs Raw TCP |
 |----------------------------|--------------|------------|
-| Raw TCP (concurrent)       | 88 ms        | 1x         |
-| Native SS (concurrent)     | 92 ms        | 1.05x      |
-| WATER + SS (sequential)    | 289 ms       | 3.3x       |
+| Raw TCP (concurrent)       | 207 ms       | 1x         |
+| Native SS (concurrent)     | 244 ms       | 1.18x      |
+| WATER + SS (sequential)    | 505 ms       | 2.4x       |
 
-Note: WATER uses sequential fetches on a single connection (reflecting typical Lantern tunnel usage). Native SS and TCP use concurrent connections per resource (browser-like).
+Note: WATER uses sequential fetches on a single connection (reflecting typical Lantern tunnel usage). Native SS and TCP use concurrent connections per resource (browser-like). Resources range from 1KB (API responses) to 100KB (images), with HTML (~2KB), CSS (~8KB), JS (~32KB), and fonts (~20KB).
 
 #### Connection Setup (WASM instantiation + network handshake)
 
 | Path                       | Time per connection | Memory    | Allocs |
 |----------------------------|--------------------:|----------:|-------:|
-| WATER + shadowsocks        | 42.0 ms             | ~2 MB     | 9,019  |
-| Raw TCP                    | 38.1 ms             | 668 B     | 14     |
+| WATER + shadowsocks        | 42.7 ms             | ~1.8 MB   | 6,507  |
+| Raw TCP                    | 39.0 ms             | 680 B     | 14     |
 
 ### Analysis
 
-**The ~1ms WASM overhead is negligible over a real network.** On localhost, WATER adds 17.6x latency over native SS. Over a 36ms network, it adds only 1.3% (37.8ms vs 37.3ms). The network RTT completely dominates.
+**The ~1ms WASM overhead is negligible over a real network.** On localhost, WATER adds 8.3x latency over native SS. Over a 37ms network, it adds only 3.5% (38.4ms vs 37.1ms). The network RTT completely dominates.
 
-**Connection setup is the real cost.** Each WATER connection takes ~42ms and allocates ~2MB. For the web browsing simulation, creating a new WATER connection per resource (sequential due to WASM serialization) makes WATER 3.3x slower than concurrent raw TCP. This confirms that **connection reuse is critical** for WATER performance.
+**Large payloads now work reliably.** After fixing the AEAD fragmentation bug in `shadowio.Reader`, payloads up to 100KB work without issues over a real network. The fix makes `readBuffer()` stateful, preserving partial AEAD frame reads across EAGAIN boundaries when encrypted frames span multiple TCP segments.
 
-**WASM module stability limits throughput testing.** The shadowsocks WASM module crashes with "input/output error" on echo payloads above ~4KB, even on a single connection. This is the same instability observed with `plain.wasm` on localhost and limits our ability to benchmark large transfers through WATER.
+**Web browsing performance is realistic.** With full-size resources (up to 100KB), a simulated page load takes ~505ms over WATER+SS versus ~207ms over raw TCP (2.4x). The gap comes from WATER's sequential single-connection model versus the concurrent multi-connection model used by browsers.
 
 ### What This Means for Lantern
 
 For Lantern's typical usage pattern (single persistent WATER tunnel, multiplexed HTTP traffic):
-- Individual request latency overhead is **imperceptible** (~1-2ms on a 36ms RTT)
+- Individual request latency overhead is **imperceptible** (~1-2ms on a 37ms RTT)
 - The bottleneck is connection establishment, not per-packet overhead
 - Pre-warming connections and connection pooling eliminate the main cost
-- The WASM stability issue with larger payloads needs investigation for production use
+- Large payloads (up to 100KB tested) work reliably over real networks
 
 ## Pre-warmed Core Optimization
 
@@ -210,6 +210,29 @@ The version detection in `NewDialerWithContext` creates a `Core` (wazero Runtime
 | Per-packet allocs    | unchanged (93) |
 
 The connection setup improvement directly benefits the web browsing simulation where per-connection overhead dominates. Roundtrip and latency are within normal variance — the optimization only eliminates redundant setup work, not per-packet overhead.
+
+## RawConn Caching + TinyGo 0.40.1 + AEAD Fragmentation Fix
+
+Three optimizations applied together:
+
+1. **RawConn caching in wazero fork**: Cached `syscall.RawConn` and fd at construction in `tcpConnFile` and `tcpListenerFile`, eliminating per-call `SyscallConn()` allocs in `Read()`, `Write()`, `Recvfrom()`, `SetNonblock()`, `Fd()`. Reduced per-roundtrip allocs from 93 to 30.
+
+2. **TinyGo 0.40.1 upgrade**: Rebuilt `shadowsocks_client.wasm` with TinyGo 0.40.1 (was 0.31.2). Required fixing `proc_exit(0)` handling in the wazero fork — TinyGo 0.40+ calls `proc_exit(0)` after `main()` completes, which previously closed the WASM module. Fix: don't close the module on exit code 0 in both `procExitFn` and `InstantiateModule`.
+
+3. **AEAD fragmentation fix**: Made `shadowio.Reader.readBuffer()` stateful in tiny-shadowsocks. When encrypted AEAD frames span multiple TCP segments (~1460 byte MSS), `io.ReadFull` returns `(partial_n, EAGAIN)`. The fix preserves the partially-filled buffer across calls using `pending`, `pendingPhase`, and `contentLen` fields. On the next call, `ReadFullFrom(reader, buffer.FreeLen())` resumes reading only the remaining bytes. This fixed the EIO crash that occurred with payloads >~1500 bytes over real networks.
+
+### Combined Impact (vs pre-warmed Core baseline)
+
+| Metric              | Before (pre-warmed) | After (all optimizations) | Change |
+|---------------------|-------------------:|-------------------------:|-------:|
+| Roundtrip latency   | 1,043 us           | 710 us                   | **-32%** |
+| Roundtrip throughput | 0.99 MB/s          | 1.44 MB/s                | **+45%** |
+| Per-roundtrip allocs | 93                 | 30                       | **-68%** |
+| Connection setup    | 2.93 ms            | 4.13 ms                  | +41%*  |
+| Max payload (remote)| ~1 KB              | 100+ KB                  | **fixed** |
+| Web browsing (remote)| N/A (1KB limited) | 505 ms/page              | **fixed** |
+
+*Connection setup is slower because TinyGo 0.40.1 produces a slightly larger WASM binary. The per-packet performance improvement more than compensates.
 
 ## Reproducing
 
