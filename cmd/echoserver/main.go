@@ -1,13 +1,5 @@
-// echoserver is a standalone TCP server for remote benchmarking.
-//
-// Protocol (line-delimited over TCP):
-//   - Pure echo: any data received is echoed back immediately.
-//   - Sized response: send a 4-byte big-endian uint32 followed by that many
-//     bytes of payload. The server echoes the exact same data back.
-//
-// The default mode is pure echo (io.Copy). This is sufficient for all
-// benchmark scenarios: latency ping-pong, throughput, and web-browsing
-// simulation (the client controls request/response sizes).
+// echoserver is a standalone TCP echo server for remote benchmarking.
+// Any data received on a connection is echoed back immediately via io.Copy.
 package main
 
 import (
