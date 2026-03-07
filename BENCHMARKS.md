@@ -7,9 +7,9 @@ Benchmarks comparing WATER+shadowsocks (WASM) against native shadowsocks (ss-tun
 - **Platform**: macOS, Darwin 24.6.0
 - **CPU**: Apple M4 Pro (14 cores)
 - **Architecture**: arm64
-- **Go version**: 1.25.1
+- **Go version**: 1.24.0
 - **TinyGo version**: 0.40.1 (WASM build)
-- **WASM runtime**: wazero v1.7.3 (getlantern/wazero fork)
+- **WASM runtime**: github.com/getlantern/wazero v1.11.0-water (getlantern/wazero fork)
 - **Shadowsocks cipher**: chacha20-ietf-poly1305
 - **Shadowsocks server**: shadowsocks-libev 3.3.5
 - **WASM module**: `shadowsocks_client.wasm` from [getlantern/wateringhole](https://github.com/getlantern/wateringhole)

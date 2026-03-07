@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -26,11 +25,7 @@ const (
 var wasmShadowsocks []byte
 
 func init() {
-	var err error
-	wasmShadowsocks, err = os.ReadFile("../wateringhole/protocols/shadowsocks/v1.0.0/shadowsocks_client.wasm")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: could not load shadowsocks wasm: %v\n", err)
-	}
+	wasmShadowsocks, _ = os.ReadFile("../wateringhole/protocols/shadowsocks/v1.0.0/shadowsocks_client.wasm")
 }
 
 // startEchoServer starts a TCP server that echoes back everything it receives.
