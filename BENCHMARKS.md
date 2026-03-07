@@ -21,23 +21,23 @@ Benchmarks comparing WATER+shadowsocks (WASM) against native shadowsocks (ss-tun
 
 | Path                      | Throughput   | Latency/op    | Allocs/op |
 |---------------------------|-------------|---------------|-----------|
-| Raw TCP                   | 52.95 MB/s  | 19,337 ns     | 0         |
-| Native shadowsocks        | 13.16 MB/s  | 77,813 ns     | 0         |
-| WATER + shadowsocks (WASM)| 1.44 MB/s   | 709,508 ns    | 30        |
+| Raw TCP                   | 62.87 MB/s  | 16,287 ns     | 0         |
+| Native shadowsocks        | 15.32 MB/s  | 66,830 ns     | 0         |
+| WATER + shadowsocks (WASM)| 1.64 MB/s   | 625,988 ns    | 30        |
 
 ### Ping-Pong Latency (4-byte roundtrip)
 
 | Path                       | Latency      | vs Raw TCP | vs Native SS |
 |----------------------------|-------------|------------|--------------|
-| Raw TCP                    | 19.2 us     | 1x         | -            |
-| Native shadowsocks         | 69.8 us     | 3.6x       | 1x           |
-| WATER + shadowsocks (WASM) | 580 us      | 30x        | 8.3x         |
+| Raw TCP                    | 15.6 us     | 1x         | -            |
+| Native shadowsocks         | 53.5 us     | 3.4x       | 1x           |
+| WATER + shadowsocks (WASM) | 539 us      | 35x        | 10.1x        |
 
 ### Connection Setup (WASM instantiation + dial)
 
 | Path                       | Time per connection | Memory    | Allocs |
 |----------------------------|--------------------:|----------:|-------:|
-| WATER + shadowsocks        | 4.13 ms             | ~1.7 MB   | 6,223  |
+| WATER + shadowsocks        | 4.29 ms             | ~1.7 MB   | 6,231  |
 
 ### WATER v1 Transport Throughput (plain WASM, no encryption)
 
@@ -45,9 +45,9 @@ These benchmarks use the built-in `reverse.wasm` module (byte-reversal only, no 
 
 | Benchmark                     | Throughput   | Latency/op    |
 |-------------------------------|-------------|---------------|
-| TCP Reference (baseline)      | 340.39 MB/s | 3,008 ns      |
-| WATER Dialer Outbound         | 33.78 MB/s  | 30,313 ns     |
-| WATER Listener Inbound        | 5.59 MB/s   | 183,179 ns    |
+| TCP Reference (baseline)      | 436.73 MB/s | 2,345 ns      |
+| WATER Dialer Outbound         | 28.84 MB/s  | 35,500 ns     |
+| WATER Listener Inbound        | 20.01 MB/s  | 51,179 ns     |
 
 ## Analysis
 
@@ -55,26 +55,26 @@ These benchmarks use the built-in `reverse.wasm` module (byte-reversal only, no 
 
 The native shadowsocks comparison isolates the cost layers:
 
-1. **Encryption cost (chacha20-poly1305)**: Native SS adds ~3.6x overhead over raw TCP (70 us vs 19 us). This is the baseline cost of authenticated encryption.
+1. **Encryption cost (chacha20-poly1305)**: Native SS adds ~3.4x overhead over raw TCP (54 us vs 16 us). This is the baseline cost of authenticated encryption.
 
-2. **WASM runtime cost**: WATER adds ~8.3x overhead on top of native SS (580 us vs 70 us). This dominates total overhead.
+2. **WASM runtime cost**: WATER adds ~10x overhead on top of native SS (539 us vs 54 us). This dominates total overhead.
 
-3. **Total WATER+SS vs raw TCP**: ~30x latency overhead.
+3. **Total WATER+SS vs raw TCP**: ~35x latency overhead.
 
 The 30 allocations per roundtrip in the WATER path (vs 0 for native SS) are from the wazero data path -- specifically the virtual socket pairs used to shuttle data between the Go host and the WASM module, and the associated memory copying. The RawConn caching optimization in the wazero fork reduced this from 93 to 30 allocs/op.
 
 ### Dialer vs Listener asymmetry
 
-The WATER v1 transport benchmarks show a significant asymmetry:
-- Dialer outbound: 33.78 MB/s (~10x slower than TCP)
-- Listener inbound: 5.59 MB/s (~61x slower than TCP)
+The WATER v1 transport benchmarks show an asymmetry:
+- Dialer outbound: 28.84 MB/s (~15x slower than TCP)
+- Listener inbound: 20.01 MB/s (~22x slower than TCP)
 
-The inbound path is ~6x slower than outbound, suggesting the listener accept + read path through the WASM module has additional overhead, possibly from how the WASM worker thread services inbound data.
+The inbound path is ~1.4x slower than outbound. The wazero v1.11.0 upgrade significantly improved listener inbound performance (from 5.59 MB/s to 20.01 MB/s), narrowing the asymmetry from 6x to 1.4x.
 
 ### Known issues
 
 - The `plain.wasm` module (passthrough, no transform) crashes with broken pipe under sustained benchmark load. Only `reverse.wasm` survives benchmarking. This appears to be a bug in the plain WASM module, not in the WATER runtime.
-- Listener inbound is ~6x slower than dialer outbound (asymmetry).
+- Listener inbound is ~1.4x slower than dialer outbound (asymmetry much reduced in wazero v1.11.0).
 
 ## Android Implications
 
@@ -82,19 +82,19 @@ The performance characteristics above have significant implications for mobile d
 
 ### CPU
 
-The 30 allocations per roundtrip and ~8.3x overhead from the WASM runtime translate directly to higher CPU utilization. On a mobile SoC (e.g., Snapdragon 8 Gen 2), single-core performance is roughly 60-70% of Apple M4 Pro, so latency numbers would be proportionally worse (~0.8-1.0 ms per roundtrip). The WASM interpreter in wazero does not JIT-compile on arm64 Android (wazero uses an interpreter mode on platforms without mmap exec support), which could further increase CPU cost.
+The 30 allocations per roundtrip and ~10x overhead from the WASM runtime translate directly to higher CPU utilization. On a mobile SoC (e.g., Snapdragon 8 Gen 2), single-core performance is roughly 60-70% of Apple M4 Pro, so latency numbers would be proportionally worse (~0.8-1.0 ms per roundtrip). The WASM interpreter in wazero does not JIT-compile on arm64 Android (wazero uses an interpreter mode on platforms without mmap exec support), which could further increase CPU cost.
 
-For typical usage patterns (web browsing, messaging), the ~0.6 ms per-packet overhead is unlikely to be perceptible since network RTTs (50-200 ms) dominate. However, high-throughput scenarios like video streaming or large file downloads will be CPU-bound at the WASM layer, potentially saturating a single core at ~1.4 MB/s or less.
+For typical usage patterns (web browsing, messaging), the ~0.5 ms per-packet overhead is unlikely to be perceptible since network RTTs (50-200 ms) dominate. However, high-throughput scenarios like video streaming or large file downloads will be CPU-bound at the WASM layer, potentially saturating a single core at ~1.6 MB/s or less.
 
 ### Memory
 
-Each WATER connection setup allocates ~1.7 MB and 6,223 objects. For a single active connection this is manageable, but applications that maintain connection pools or open many concurrent connections (e.g., HTTP/2 multiplexing over multiple WATER tunnels) could see significant heap pressure. On Android devices with 4-6 GB RAM and aggressive memory management, this could trigger more frequent garbage collection pauses.
+Each WATER connection setup allocates ~1.7 MB and 6,231 objects. For a single active connection this is manageable, but applications that maintain connection pools or open many concurrent connections (e.g., HTTP/2 multiplexing over multiple WATER tunnels) could see significant heap pressure. On Android devices with 4-6 GB RAM and aggressive memory management, this could trigger more frequent garbage collection pauses.
 
 ### Battery Life
 
 Battery impact comes from two sources:
 
-1. **CPU wake time**: The 30 allocs/roundtrip and data copying through virtual socket pairs keep the CPU active longer per packet than native implementations. For background data sync or push notifications that arrive during doze mode, each packet wakes the CPU for ~0.6 ms (WATER) vs ~70 us (native SS) -- roughly 8x longer per wake event.
+1. **CPU wake time**: The 30 allocs/roundtrip and data copying through virtual socket pairs keep the CPU active longer per packet than native implementations. For background data sync or push notifications that arrive during doze mode, each packet wakes the CPU for ~0.5 ms (WATER) vs ~54 us (native SS) -- roughly 10x longer per wake event.
 
 2. **GC pressure**: The allocation-heavy data path means the Go runtime's garbage collector runs more frequently. Each GC cycle is a CPU-intensive operation that prevents the SoC from entering low-power states.
 
@@ -102,14 +102,14 @@ For light usage (occasional browsing, messaging), the battery impact would be mo
 
 ### Recommendations for mobile
 
-- **Connection reuse is critical**: The 4.1 ms connection setup cost (with ~1.7 MB allocation) makes connection pooling essential on mobile. Avoid creating new WATER connections per-request.
+- **Connection reuse is critical**: The 4.3 ms connection setup cost (with ~1.7 MB allocation) makes connection pooling essential on mobile. Avoid creating new WATER connections per-request.
 - **Consider pre-warming**: Instantiate the WASM module during app startup rather than on first network request to avoid latency spikes.
 - **Monitor GC pauses**: The 30 allocs/roundtrip will generate GC pressure. Profiling on target Android devices is recommended.
-- **Throughput ceiling**: Plan for ~1.4 MB/s per WATER connection on mid-range Android devices. Applications needing higher throughput should either use multiple connections or consider native transport implementations for performance-critical paths.
+- **Throughput ceiling**: Plan for ~1.6 MB/s per WATER connection on mid-range Android devices. Applications needing higher throughput should either use multiple connections or consider native transport implementations for performance-critical paths.
 
 ## Remote Benchmarks (Real Network)
 
-The localhost benchmarks above show WASM overhead dominating (~1.1ms per roundtrip), but on localhost the network RTT is negligible (~18us). To understand real-world impact, we run the same comparisons over an actual network where WASM overhead competes with real RTT.
+The localhost benchmarks above show WASM overhead dominating (~0.5ms per roundtrip), but on localhost the network RTT is negligible (~16us). To understand real-world impact, we run the same comparisons over an actual network where WASM overhead competes with real RTT.
 
 ### Remote Test Setup
 
@@ -225,10 +225,10 @@ Three optimizations applied together:
 
 | Metric              | Before (pre-warmed) | After (all optimizations) | Change |
 |---------------------|-------------------:|-------------------------:|-------:|
-| Roundtrip latency   | 1,043 us           | 710 us                   | **-32%** |
-| Roundtrip throughput | 0.99 MB/s          | 1.44 MB/s                | **+45%** |
+| Roundtrip latency   | 1,043 us           | 626 us                   | **-40%** |
+| Roundtrip throughput | 0.99 MB/s          | 1.64 MB/s                | **+66%** |
 | Per-roundtrip allocs | 93                 | 30                       | **-68%** |
-| Connection setup    | 2.93 ms            | 4.13 ms                  | +41%*  |
+| Connection setup    | 2.93 ms            | 4.29 ms                  | +46%*  |
 | Max payload (remote)| ~1 KB              | 100+ KB                  | **fixed** |
 | Web browsing (remote)| N/A (1KB limited) | 505 ms/page              | **fixed** |
 
