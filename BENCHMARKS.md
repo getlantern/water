@@ -234,6 +234,48 @@ Three optimizations applied together:
 
 *Connection setup is slower because TinyGo 0.40.1 produces a slightly larger WASM binary. The per-packet performance improvement more than compensates.
 
+## Wazero v1.11.0 Rebase
+
+Rebased the getlantern/wazero fork from upstream v1.7.3 to v1.11.0. This brings in ~2 years of upstream improvements including SSA-based compiler optimizations, improved poll_oneoff, and better memory management. All 5 custom WATER commits (extended CompiledModule, extended api.Module, better poll_oneoff, RawConn caching, proc_exit(0) fix) were cherry-picked cleanly onto the new base.
+
+### Before (wazero v1.7.3 fork)
+
+| Metric                     | Value          |
+|----------------------------|---------------|
+| E2E roundtrip (1KB)        | 710 us, 1.44 MB/s |
+| E2E latency (4B)           | 580 us         |
+| Connection setup            | 4.13 ms        |
+| v1 Dialer outbound          | 33.78 MB/s     |
+| v1 Listener inbound         | 5.59 MB/s      |
+| v1 TCP reference             | 340.39 MB/s    |
+| Dialer/Listener asymmetry   | 6x             |
+
+### After (wazero v1.11.0 fork)
+
+| Metric                     | Value          |
+|----------------------------|---------------|
+| E2E roundtrip (1KB)        | 626 us, 1.64 MB/s |
+| E2E latency (4B)           | 539 us         |
+| Connection setup            | 4.29 ms        |
+| v1 Dialer outbound          | 28.84 MB/s     |
+| v1 Listener inbound         | 20.01 MB/s     |
+| v1 TCP reference             | 436.73 MB/s    |
+| Dialer/Listener asymmetry   | 1.4x           |
+
+### Impact
+
+| Metric                     | Change         |
+|----------------------------|---------------|
+| E2E roundtrip latency       | **-12%** (710 -> 626 us) |
+| E2E roundtrip throughput     | **+14%** (1.44 -> 1.64 MB/s) |
+| E2E latency                 | **-7%** (580 -> 539 us) |
+| v1 Listener inbound         | **+258%** (5.59 -> 20.01 MB/s) |
+| Dialer/Listener asymmetry   | **6x -> 1.4x** |
+| Connection setup             | +4% (within noise) |
+| Per-packet allocs            | unchanged (30) |
+
+The biggest win is the listener inbound path — wazero v1.11.0's compiler improvements nearly eliminated the 6x asymmetry between dialer and listener. E2E roundtrip improved ~12%, and connection setup is unchanged within measurement noise.
+
 ## Reproducing
 
 Run the end-to-end benchmarks (requires `ss-server` and `ss-tunnel` from shadowsocks-libev):
