@@ -319,11 +319,11 @@ func BenchmarkE2ERoundtrip(b *testing.B) {
 
 	benchRoundtrip := func(b *testing.B, conn net.Conn) {
 		msg := make([]byte, 1024)
+		rand.Read(msg)
 		recvBuf := make([]byte, 1024)
 		b.SetBytes(1024)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			rand.Read(msg)
 			if _, err := conn.Write(msg); err != nil {
 				b.Fatalf("write error at iteration %d: %v", i, err)
 			}

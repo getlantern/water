@@ -8,7 +8,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
-	"math/big"
+	mathrand "math/rand/v2"
 	"net"
 	"os"
 	"os/exec"
@@ -246,19 +246,17 @@ func BenchmarkRemoteThroughput(b *testing.B) {
 // For the native SS and raw TCP paths, we open concurrent connections to
 // show the best-case comparison.
 
-func simulatePageLoadSingle(b *testing.B, conn net.Conn, resources []int) {
+func simulatePageLoadSingle(b *testing.B, conn net.Conn, resources []int, buf []byte) {
 	b.Helper()
 	conn.SetDeadline(time.Now().Add(60 * time.Second))
 	defer conn.SetDeadline(time.Time{})
 
 	for _, sz := range resources {
-		msg := make([]byte, sz)
-		rand.Read(msg)
+		msg := buf[:sz]
 		if _, err := conn.Write(msg); err != nil {
 			b.Fatalf("write %d: %v", sz, err)
 		}
-		buf := make([]byte, sz)
-		if _, err := io.ReadFull(conn, buf); err != nil {
+		if _, err := io.ReadFull(conn, msg); err != nil {
 			b.Fatalf("read %d: %v", sz, err)
 		}
 	}
@@ -316,12 +314,10 @@ func randomPageResources() []int {
 		50 * 1024, // image
 		20 * 1024, // font
 	}
-	n, _ := rand.Int(rand.Reader, big.NewInt(4))
-	extra := make([]int, int(n.Int64())+1)
+	extra := make([]int, mathrand.IntN(4)+1)
 	sizes := []int{4 * 1024, 16 * 1024, 64 * 1024, 100 * 1024}
 	for i := range extra {
-		idx, _ := rand.Int(rand.Reader, big.NewInt(int64(len(sizes))))
-		extra[i] = sizes[idx.Int64()]
+		extra[i] = sizes[mathrand.IntN(len(sizes))]
 	}
 	return append(base, extra...)
 }
@@ -344,9 +340,11 @@ func BenchmarkRemoteWebBrowsing(b *testing.B) {
 		conn := remoteWaterDial(b, inf)
 		defer conn.Close()
 		verifyEcho(b, conn, "water+ss")
+		buf := make([]byte, 100*1024) // max resource size
+		rand.Read(buf)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			simulatePageLoadSingle(b, conn, pages[i%len(pages)])
+			simulatePageLoadSingle(b, conn, pages[i%len(pages)], buf)
 		}
 	})
 
