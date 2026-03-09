@@ -27,7 +27,7 @@ func ExampleListener() {
 		ModuleConfigFactory: water.NewWazeroModuleConfigFactory(),
 	}
 
-	waterListener, err := v0.NewListenerWithContext(context.Background(), config)
+	waterListener, err := v0.NewListenerWithContext(context.Background(), config, nil)
 	if err != nil {
 		panic(fmt.Sprintf("failed to listen: %v", err))
 	}

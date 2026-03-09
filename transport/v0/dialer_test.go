@@ -20,7 +20,7 @@ func ExampleDialer() {
 		ModuleConfigFactory: water.NewWazeroModuleConfigFactory(),
 	}
 
-	waterDialer, err := v0.NewDialerWithContext(context.Background(), config)
+	waterDialer, err := v0.NewDialerWithContext(context.Background(), config, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -88,7 +88,7 @@ func testDialerBadAddr(t *testing.T) {
 		ModuleConfigFactory: water.NewWazeroModuleConfigFactory(),
 	}
 
-	dialer, err := v0.NewDialerWithContext(context.Background(), config)
+	dialer, err := v0.NewDialerWithContext(context.Background(), config, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func testDialerPlain(t *testing.T) { // skipcq: GO-R1005
 		TransportModuleBin:  wasmPlain,
 		ModuleConfigFactory: water.NewWazeroModuleConfigFactory(),
 	}
-	dialer, err := v0.NewDialerWithContext(context.Background(), config)
+	dialer, err := v0.NewDialerWithContext(context.Background(), config, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func testDialerReverse(t *testing.T) { // skipcq: GO-R1005
 		TransportModuleBin:  wasmReverse,
 		ModuleConfigFactory: water.NewWazeroModuleConfigFactory(),
 	}
-	dialer, err := v0.NewDialerWithContext(context.Background(), config)
+	dialer, err := v0.NewDialerWithContext(context.Background(), config, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func BenchmarkDialerOutbound(b *testing.B) {
 		TransportModuleBin:  wasmPlain,
 		ModuleConfigFactory: water.NewWazeroModuleConfigFactory(),
 	}
-	dialer, err := v0.NewDialerWithContext(context.Background(), config)
+	dialer, err := v0.NewDialerWithContext(context.Background(), config, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -439,7 +439,7 @@ func BenchmarkDialerOutboundReverse(b *testing.B) {
 		TransportModuleBin:  wasmReverse,
 		ModuleConfigFactory: water.NewWazeroModuleConfigFactory(),
 	}
-	dialer, err := v0.NewDialerWithContext(context.Background(), config)
+	dialer, err := v0.NewDialerWithContext(context.Background(), config, nil)
 	if err != nil {
 		b.Fatal(err)
 	}

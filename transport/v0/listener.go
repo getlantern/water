@@ -29,10 +29,7 @@ type Listener struct {
 //
 // Deprecated: use [NewListenerWithContext] instead.
 func NewListener(c *water.Config) (water.Listener, error) {
-	return &Listener{
-		config: c.Clone(),
-		closed: new(atomic.Bool),
-	}, nil
+	return NewListenerWithContext(context.Background(), c, nil)
 }
 
 // NewListenerWithContext creates a new [water.Listener] from the [water.Config] with
@@ -44,7 +41,10 @@ func NewListener(c *water.Config) (water.Listener, error) {
 // function call will return with an error.
 // Call [water.WazeroRuntimeConfigFactory.SetCloseOnContextDone] with false to
 // disable this behavior.
-func NewListenerWithContext(ctx context.Context, c *water.Config) (water.Listener, error) {
+func NewListenerWithContext(ctx context.Context, c *water.Config, core water.Core) (water.Listener, error) {
+	if core != nil {
+		core.Close()
+	}
 	return &Listener{
 		config: c.Clone(),
 		closed: new(atomic.Bool),

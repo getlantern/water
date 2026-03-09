@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/refraction-networking/water"
 )
@@ -19,6 +20,9 @@ type Dialer struct {
 	config *water.Config
 	ctx    context.Context
 
+	prewarmedMu sync.Mutex
+	prewarmed   water.Core // set at creation, consumed by first DialContext
+
 	water.UnimplementedDialer // embedded to ensure forward compatibility
 }
 
@@ -26,17 +30,20 @@ type Dialer struct {
 //
 // Deprecated: use [NewDialerWithContext] instead.
 func NewDialer(c *water.Config) (water.Dialer, error) {
-	return NewDialerWithContext(context.Background(), c)
+	return NewDialerWithContext(context.Background(), c, nil)
 }
 
 // NewDialerWithContext creates a new [water.Dialer] from the given [water.Config]
 // with the given [context.Context].
 //
 // The context is used as the default context for call to [Dialer.Dial].
-func NewDialerWithContext(ctx context.Context, c *water.Config) (water.Dialer, error) {
+// If a non-nil Core is provided, it will be used for the first DialContext call,
+// avoiding the cost of creating a new Core (runtime + module compilation).
+func NewDialerWithContext(ctx context.Context, c *water.Config, core water.Core) (water.Dialer, error) {
 	return &Dialer{
-		config: c.Clone(),
-		ctx:    ctx,
+		config:    c.Clone(),
+		ctx:       ctx,
+		prewarmed: core,
 	}, nil
 }
 
@@ -66,9 +73,20 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (conn
 	go func() {
 		defer dialReady()
 		var core water.Core
-		core, err = water.NewCoreWithContext(ctx, d.config)
-		if err != nil {
-			return
+
+		// Use pre-warmed core for first dial to avoid redundant
+		// runtime creation and module compilation.
+		d.prewarmedMu.Lock()
+		if d.prewarmed != nil {
+			core = d.prewarmed
+			d.prewarmed = nil
+			d.prewarmedMu.Unlock()
+		} else {
+			d.prewarmedMu.Unlock()
+			core, err = water.NewCoreWithContext(ctx, d.config)
+			if err != nil {
+				return
+			}
 		}
 
 		conn, err = dial(core, network, address)
