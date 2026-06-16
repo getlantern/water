@@ -184,8 +184,7 @@ type core struct {
 	// host module are shared and must not be closed here; only the instance is.
 	shared       *SharedRuntime
 	instanceName string
-	// Per-connection host hooks the shared env module dispatches to, keyed by the
-	// calling instance.
+	// Per-connection host hooks the shared env module dispatches to.
 	hostDial      func(network, address string) int32
 	hostDialFixed func() int32
 	hostAccept    func() int32
