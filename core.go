@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"expvar"
 	"fmt"
 	"io"
 	"net"
@@ -209,18 +208,6 @@ func NewCore(config *Config) (Core, error) {
 	return NewCoreWithContext(context.Background(), config)
 }
 
-// TEMPORARY diagnostic counters (remove once the core leak is resolved):
-// surfaced via expvar so a leak can be attributed to creation-vs-close imbalance
-// or to a specific close error.
-var (
-	dbgCoresCreated   = expvar.NewInt("water_cores_created")
-	dbgCloseCalls     = expvar.NewInt("water_core_close_calls")
-	dbgCloseCompleted = expvar.NewInt("water_core_close_completed")
-	dbgInstanceErrs   = expvar.NewInt("water_core_instance_close_errs")
-	dbgRuntimeErrs    = expvar.NewInt("water_core_runtime_close_errs")
-	dbgModuleErrs     = expvar.NewInt("water_core_module_close_errs")
-)
-
 // NewCoreWithContext creates a new Core with the given context and config.
 //
 // It uses the default implementation of interface.Core as
@@ -251,7 +238,6 @@ func NewCoreWithContext(ctx context.Context, config *Config) (Core, error) {
 		core.Close()
 	})
 
-	dbgCoresCreated.Add(1)
 	return c, nil
 }
 
@@ -288,7 +274,6 @@ func (c *core) cleanup() {
 func (c *core) Close() error {
 	var closeErr error
 
-	dbgCloseCalls.Add(1)
 	c.closeOnce.Do(func() {
 		// Close every resource even if an earlier one errors. instance.Close can
 		// return the module's exit/context error after the worker exits; bailing
@@ -302,7 +287,6 @@ func (c *core) Close() error {
 				c.shared.unregister(c.instance)
 			}
 			if err := c.instance.Close(c.ctx); err != nil {
-				dbgInstanceErrs.Add(1)
 				errs = append(errs, fmt.Errorf("water: (*wazero/api.Module).Close returned error: %w", err))
 			}
 			c.instance = nil // TODO: force dropped
@@ -315,7 +299,6 @@ func (c *core) Close() error {
 		if c.shared == nil {
 			if c.runtime != nil {
 				if err := c.runtime.Close(c.ctx); err != nil {
-					dbgRuntimeErrs.Add(1)
 					errs = append(errs, fmt.Errorf("water: (*wazero.Runtime).Close returned error: %w", err))
 				}
 				c.runtime = nil // TODO: force dropped
@@ -324,7 +307,6 @@ func (c *core) Close() error {
 
 			if c.module != nil {
 				if err := c.module.Close(c.ctx); err != nil {
-					dbgModuleErrs.Add(1)
 					errs = append(errs, fmt.Errorf("water: (*wazero.CompiledModule).Close returned error: %w", err))
 				}
 				c.module = nil // TODO: force dropped
@@ -342,7 +324,6 @@ func (c *core) Close() error {
 		// one, since Go never collects a cycle containing a finalizer — leaking
 		// the whole core.
 		runtime.SetFinalizer(c, nil)
-		dbgCloseCompleted.Add(1)
 
 		if c.ctxCancel != nil {
 			c.ctxCancel()
