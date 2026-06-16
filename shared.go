@@ -20,9 +20,9 @@ import (
 // CompileModule that otherwise leaks the interpreter's compiled functions and
 // burns CPU re-decoding the WASM binary on every connection.
 //
-// The shared env host functions are stateless: they dispatch to the per-dial
-// connection state via a registry keyed by the calling module instance, so many
-// guest instances can run concurrently against one env without colliding.
+// The shared env host functions hold no per-connection state: they dispatch to
+// it via a registry keyed by the calling module instance, so many guest
+// instances can run concurrently against one env without colliding.
 type SharedRuntime struct {
 	config  *Config
 	runtime wazero.Runtime
@@ -36,7 +36,8 @@ type SharedRuntime struct {
 // NewCore mints a per-connection core that runs on this shared runtime. The
 // runtime, compiled module, WASI, and env host module are reused; only a fresh
 // guest instance is created per dial. config carries the per-dial
-// TransportModuleConfig (e.g. remote_addr) and dialer hooks.
+// TransportModuleConfig (e.g. remote_addr); the dial hooks are set separately
+// via SetHostFuncs.
 func (s *SharedRuntime) NewCore(ctx context.Context, config *Config) Core {
 	c := &core{
 		config:        config,

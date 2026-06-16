@@ -630,10 +630,10 @@ func (tm *TransportModule) Initialize() error {
 	}
 }
 
-// linkShared wires the per-connection dial/accept hooks for shared-runtime mode.
-// Each hook performs the dial (or accept) and pushes the resulting conn into this
-// instance via PushConn (which tracks it for cleanup), returning a WASM fd or an
-// encoded error. The shared env module dispatches to these by calling instance.
+// linkShared wires the per-connection dial/accept hooks the shared env module
+// dispatches to. PushConn tracks each conn for cleanup; hooks return ENODEV when
+// no dialer/listener is provided, so an unsupported direction fails cleanly
+// rather than panicking on a nil callback.
 func (tm *TransportModule) linkShared(dialer *networkDialer, listener net.Listener) error {
 	enodev := wasip1.EncodeWATERError(syscall.ENODEV)
 	enotconn := wasip1.EncodeWATERError(syscall.ENOTCONN)

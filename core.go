@@ -184,9 +184,8 @@ type core struct {
 	// host module are shared and must not be closed here; only the instance is.
 	shared       *SharedRuntime
 	instanceName string
-	// Per-connection host hooks invoked by the shared env module (dispatched by
-	// the calling instance). They perform the dial and push the conn into this
-	// instance, returning a WASM fd or an encoded error.
+	// Per-connection host hooks the shared env module dispatches to, keyed by the
+	// calling instance.
 	hostDial      func(network, address string) int32
 	hostDialFixed func() int32
 	hostAccept    func() int32

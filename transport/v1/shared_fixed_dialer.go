@@ -31,9 +31,7 @@ func NewSharedFixedDialer(ctx context.Context, baseConfig *water.Config) (*Share
 
 // DialFixedContext instantiates a fresh guest on the shared runtime and dials.
 // config carries the per-dial NetworkDialerFunc (how to reach the server) and
-// TransportModuleConfig (e.g. remote_addr, mounted at /conf/watm.cfg). The
-// returned conn owns its instance; closing it tears down only that instance and
-// leaves the shared runtime intact for reuse.
+// TransportModuleConfig (e.g. remote_addr, mounted at /conf/watm.cfg).
 func (d *SharedFixedDialer) DialFixedContext(ctx context.Context, config *water.Config) (water.Conn, error) {
 	core := d.shared.NewCore(ctx, config)
 	conn, err := dialFixed(core)
