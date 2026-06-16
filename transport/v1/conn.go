@@ -92,6 +92,15 @@ func dial(core water.Core, network, address string) (c water.Conn, err error) {
 		tm: tm,
 	}
 
+	// On any error below, conn is never returned to the caller, so close it here
+	// to release the core's wazero runtime and WASM linear memory; otherwise the
+	// failed dial leaks a full core.
+	defer func() {
+		if err != nil {
+			conn.Close()
+		}
+	}()
+
 	dialer := &networkDialer{
 		dialerFunc: core.Config().NetworkDialerFuncOrDefault(),
 		overrideAddress: struct {
@@ -239,10 +248,13 @@ func (c *Conn) closeOnWorkerError() {
 
 	if err := tm.WaitWorker(); err != nil { // block until worker thread returns
 		log.LErrorf(core.Logger(), "water: WATMv1: worker thread returned with error: %v", err)
-		c.Close()
 	} else {
 		log.LDebugf(core.Logger(), "water: WATMv1: worker thread returned")
 	}
+
+	// A returned worker can process no more data, so close regardless of how it
+	// exited; a clean exit otherwise leaks the core until the caller closes the conn.
+	c.Close()
 }
 
 // Read implements the net.Conn interface.
