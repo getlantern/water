@@ -29,9 +29,10 @@ type SharedRuntime struct {
 	runtime wazero.Runtime
 	module  wazero.CompiledModule
 
-	mu  sync.RWMutex
-	reg map[api.Module]*core
-	seq atomic.Uint64
+	mu      sync.RWMutex
+	reg     map[api.Module]*core
+	closing bool // set once Close begins; blocks new registrations
+	seq     atomic.Uint64
 }
 
 // NewCore mints a per-connection core that runs on this shared runtime. The
@@ -74,28 +75,59 @@ func NewSharedRuntime(ctx context.Context, config *Config) (*SharedRuntime, erro
 	return s, nil
 }
 
-// Close releases the shared runtime. It first waits for in-flight instances to
-// drain from the registry, because closing the runtime while a worker is still
-// executing in the guest panics that worker; the per-connection close path stops
-// each worker before freeing its instance, but a bulk runtime close would not. A
-// grace period bounds the wait so a stuck instance can't block shutdown forever.
+// Close releases the shared runtime. It first marks the runtime closing (so no
+// new dial can register) and waits for in-flight instances to drain from the
+// registry, because closing the runtime while a worker is still executing in the
+// guest panics that worker; the per-connection close path stops each worker
+// before freeing its instance, but a bulk runtime close would not. The wait is
+// bounded by ctx and a grace period so a stuck instance can't block shutdown
+// forever.
 func (s *SharedRuntime) Close(ctx context.Context) error {
-	deadline := time.Now().Add(2 * time.Second)
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
+
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	grace := time.NewTimer(2 * time.Second)
+	defer grace.Stop()
 	for {
 		s.mu.RLock()
 		n := len(s.reg)
 		s.mu.RUnlock()
-		if n == 0 || time.Now().After(deadline) {
+		if n == 0 {
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return s.runtime.Close(ctx)
+		case <-grace.C:
+			return s.runtime.Close(ctx)
+		case <-ticker.C:
+		}
 	}
 	return s.runtime.Close(ctx)
 }
 
-func (s *SharedRuntime) register(mod api.Module, c *core) {
+// register records c under its instance so the shared env can dispatch to it. It
+// returns false if the runtime is closing, in which case the caller must abandon
+// the just-created instance rather than run it against a runtime about to close.
+func (s *SharedRuntime) register(mod api.Module, c *core) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return false
+	}
 	s.reg[mod] = c
+	return true
+}
+
+// clearHooks drops c's per-connection host hooks under the same lock the env
+// dispatch path reads them, so an in-flight host call either sees a live hook or
+// a nil one — never a hook into a half-closed connection.
+func (s *SharedRuntime) clearHooks(c *core) {
+	s.mu.Lock()
+	c.hostDial, c.hostDialFixed, c.hostAccept = nil, nil, nil
 	s.mu.Unlock()
 }
 
@@ -105,11 +137,15 @@ func (s *SharedRuntime) unregister(mod api.Module) {
 	s.mu.Unlock()
 }
 
-func (s *SharedRuntime) lookup(mod api.Module) *core {
+// hooks returns mod's per-connection host hooks snapshotted under the registry
+// lock, so a concurrent close can't null a hook between the lookup and the call.
+func (s *SharedRuntime) hooks(mod api.Module) (dial func(network, address string) int32, dialFixed, accept func() int32) {
 	s.mu.RLock()
-	c := s.reg[mod]
-	s.mu.RUnlock()
-	return c
+	defer s.mu.RUnlock()
+	if c := s.reg[mod]; c != nil {
+		return c.hostDial, c.hostDialFixed, c.hostAccept
+	}
+	return nil, nil, nil
 }
 
 // instantiateEnv registers the one shared env host module. Each function looks
@@ -120,8 +156,8 @@ func (s *SharedRuntime) instantiateEnv(ctx context.Context) error {
 	einval := wasip1.EncodeWATERError(syscall.EINVAL)
 
 	waterDial := func(_ context.Context, mod api.Module, networkIovs, networkIovsLen, addressIovs, addressIovsLen int32) int32 {
-		c := s.lookup(mod)
-		if c == nil || c.hostDial == nil {
+		dial, _, _ := s.hooks(mod)
+		if dial == nil {
 			return enodev
 		}
 		networkBuf := make([]byte, 256)
@@ -134,23 +170,23 @@ func (s *SharedRuntime) instantiateEnv(ctx context.Context) error {
 		if err != nil {
 			return einval
 		}
-		return c.hostDial(string(networkBuf[:n]), string(addressBuf[:m]))
+		return dial(string(networkBuf[:n]), string(addressBuf[:m]))
 	}
 
 	waterDialFixed := func(_ context.Context, mod api.Module) int32 {
-		c := s.lookup(mod)
-		if c == nil || c.hostDialFixed == nil {
+		_, dialFixed, _ := s.hooks(mod)
+		if dialFixed == nil {
 			return enodev
 		}
-		return c.hostDialFixed()
+		return dialFixed()
 	}
 
 	waterAccept := func(_ context.Context, mod api.Module) int32 {
-		c := s.lookup(mod)
-		if c == nil || c.hostAccept == nil {
+		_, _, accept := s.hooks(mod)
+		if accept == nil {
 			return enodev
 		}
-		return c.hostAccept()
+		return accept()
 	}
 
 	_, err := s.runtime.NewHostModuleBuilder("env").

@@ -190,8 +190,17 @@ type core struct {
 }
 
 // SetHostFuncs records the per-connection host hooks the shared env module
-// dispatches to. Used only in shared-runtime mode.
+// dispatches to. The hooks are only meaningful in shared-runtime mode.
+//
+// In shared-runtime mode the hooks are written under the shared runtime's lock
+// because the env dispatch path reads them concurrently from guest goroutines.
 func (c *core) SetHostFuncs(dial func(network, address string) int32, dialFixed, accept func() int32) {
+	if c.shared != nil {
+		c.shared.mu.Lock()
+		c.hostDial, c.hostDialFixed, c.hostAccept = dial, dialFixed, accept
+		c.shared.mu.Unlock()
+		return
+	}
 	c.hostDial, c.hostDialFixed, c.hostAccept = dial, dialFixed, accept
 }
 
@@ -281,13 +290,20 @@ func (c *core) Close() error {
 		// (the decoded module), leaking a full core per dial.
 		var errs []error
 		if c.instance != nil {
-			// Unregister before closing so the shared env stops dispatching to a
-			// half-closed instance.
+			inst := c.instance
+			// Clear the host hooks before closing so an in-flight env dispatch sees
+			// nil (returning ENODEV) rather than a hook into a half-closed
+			// connection, but stay registered until Close returns: the shared
+			// Close drains on the registry, and unregistering early would let it
+			// free the runtime while this worker is still unwinding.
 			if c.shared != nil {
-				c.shared.unregister(c.instance)
+				c.shared.clearHooks(c)
 			}
-			if err := c.instance.Close(c.ctx); err != nil {
+			if err := inst.Close(c.ctx); err != nil {
 				errs = append(errs, fmt.Errorf("water: (*wazero/api.Module).Close returned error: %w", err))
+			}
+			if c.shared != nil {
+				c.shared.unregister(inst)
 			}
 			c.instance = nil // TODO: force dropped
 			log.LDebugf(c.config.Logger(), "INSTANCE DROPPED")
@@ -384,6 +400,11 @@ func (c *core) ImportedFunctions() map[string]map[string]api.FunctionDefinition 
 
 // ImportFunction implements Core.
 func (c *core) ImportFunction(module, name string, f any) error {
+	if c.shared != nil {
+		// Shared cores receive host functions from the shared env via SetHostFuncs;
+		// an import recorded here would never be wired.
+		return errors.New("water: ImportFunction is not supported on a shared runtime; use SetHostFuncs")
+	}
 	if c.instance != nil {
 		return fmt.Errorf("water: cannot import function after instantiation")
 	}
@@ -467,8 +488,12 @@ func (c *core) Instantiate() (err error) {
 	if c.instance, err = c.runtime.InstantiateModule(c.ctx, c.module, moduleConfig); err != nil {
 		return fmt.Errorf("water: (*Runtime).InstantiateWithConfig returned error: %w", err)
 	}
-	if c.shared != nil {
-		c.shared.register(c.instance, c)
+	if c.shared != nil && !c.shared.register(c.instance, c) {
+		// The shared runtime began closing between NewCore and here; abandon this
+		// instance rather than run it against a runtime about to be torn down.
+		_ = c.instance.Close(c.ctx)
+		c.instance = nil
+		return errors.New("water: shared runtime is closing")
 	}
 
 	return nil
