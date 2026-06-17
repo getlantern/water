@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/refraction-networking/water/internal/wasip1"
 	"github.com/tetratelabs/wazero"
@@ -73,8 +74,22 @@ func NewSharedRuntime(ctx context.Context, config *Config) (*SharedRuntime, erro
 	return s, nil
 }
 
-// Close releases the shared runtime and every instance still running on it.
+// Close releases the shared runtime. It first waits for in-flight instances to
+// drain from the registry, because closing the runtime while a worker is still
+// executing in the guest panics that worker; the per-connection close path stops
+// each worker before freeing its instance, but a bulk runtime close would not. A
+// grace period bounds the wait so a stuck instance can't block shutdown forever.
 func (s *SharedRuntime) Close(ctx context.Context) error {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.RLock()
+		n := len(s.reg)
+		s.mu.RUnlock()
+		if n == 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	return s.runtime.Close(ctx)
 }
 
