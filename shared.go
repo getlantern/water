@@ -32,7 +32,11 @@ type SharedRuntime struct {
 	mu      sync.RWMutex
 	reg     map[api.Module]*core
 	closing bool // set once Close begins; blocks new registrations
-	seq     atomic.Uint64
+
+	closeOnce sync.Once
+	closeErr  error
+
+	seq atomic.Uint64
 }
 
 // NewCore mints a per-connection core that runs on this shared runtime. The
@@ -82,31 +86,38 @@ func NewSharedRuntime(ctx context.Context, config *Config) (*SharedRuntime, erro
 // before freeing its instance, but a bulk runtime close would not. The wait is
 // bounded by ctx and a grace period so a stuck instance can't block shutdown
 // forever.
+//
+// Close is idempotent: the drain-and-close runs once, and later or concurrent
+// callers block until it finishes and observe the same result.
 func (s *SharedRuntime) Close(ctx context.Context) error {
-	s.mu.Lock()
-	s.closing = true
-	s.mu.Unlock()
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closing = true
+		s.mu.Unlock()
 
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	grace := time.NewTimer(2 * time.Second)
-	defer grace.Stop()
-	for {
-		s.mu.RLock()
-		n := len(s.reg)
-		s.mu.RUnlock()
-		if n == 0 {
-			break
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		grace := time.NewTimer(2 * time.Second)
+		defer grace.Stop()
+	drain:
+		for {
+			s.mu.RLock()
+			n := len(s.reg)
+			s.mu.RUnlock()
+			if n == 0 {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				break drain
+			case <-grace.C:
+				break drain
+			case <-ticker.C:
+			}
 		}
-		select {
-		case <-ctx.Done():
-			return s.runtime.Close(ctx)
-		case <-grace.C:
-			return s.runtime.Close(ctx)
-		case <-ticker.C:
-		}
-	}
-	return s.runtime.Close(ctx)
+		s.closeErr = s.runtime.Close(ctx)
+	})
+	return s.closeErr
 }
 
 // register records c under its instance so the shared env can dispatch to it. It
