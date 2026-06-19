@@ -47,6 +47,15 @@ type Core interface {
 	// associated with it.
 	Close() error
 
+	// Shared reports whether this Core runs on a SharedRuntime, in which case the
+	// runtime/module/env are reused across dials and its env host functions are
+	// wired via SetHostFuncs rather than ImportFunction.
+	Shared() bool
+
+	// SetHostFuncs records the per-connection host hooks the shared env module
+	// dispatches to. Only meaningful when Shared returns true.
+	SetHostFuncs(dial func(network, address string) int32, dialFixed, accept func() int32)
+
 	// Exports dumps all the exported functions and globals which
 	// are provided by the WebAssembly module.
 	//
@@ -169,7 +178,34 @@ type core struct {
 	importModules map[string]wazero.HostModuleBuilder
 
 	closeOnce sync.Once
+
+	// Set when this core runs on a SharedRuntime: the runtime, module, and env
+	// host module are shared and must not be closed here; only the instance is.
+	shared       *SharedRuntime
+	instanceName string
+	// Per-connection host hooks the shared env module dispatches to.
+	hostDial      func(network, address string) int32
+	hostDialFixed func() int32
+	hostAccept    func() int32
 }
+
+// SetHostFuncs records the per-connection host hooks the shared env module
+// dispatches to. The hooks are only meaningful in shared-runtime mode.
+//
+// In shared-runtime mode the hooks are written under the shared runtime's lock
+// because the env dispatch path reads them concurrently from guest goroutines.
+func (c *core) SetHostFuncs(dial func(network, address string) int32, dialFixed, accept func() int32) {
+	if c.shared != nil {
+		c.shared.mu.Lock()
+		c.hostDial, c.hostDialFixed, c.hostAccept = dial, dialFixed, accept
+		c.shared.mu.Unlock()
+		return
+	}
+	c.hostDial, c.hostDialFixed, c.hostAccept = dial, dialFixed, accept
+}
+
+// Shared implements Core.
+func (c *core) Shared() bool { return c.shared != nil }
 
 // NewCore creates a new Core with the given config.
 //
@@ -208,7 +244,7 @@ func NewCoreWithContext(ctx context.Context, config *Config) (Core, error) {
 	}
 
 	runtime.SetFinalizer(c, func(core *core) {
-		c.Close()
+		core.Close()
 	})
 
 	return c, nil
@@ -248,32 +284,62 @@ func (c *core) Close() error {
 	var closeErr error
 
 	c.closeOnce.Do(func() {
+		// Close every resource even if an earlier one errors. instance.Close can
+		// return the module's exit/context error after the worker exits; bailing
+		// there would skip runtime.Close (the WASM linear memory) and module.Close
+		// (the decoded module), leaking a full core per dial.
+		var errs []error
 		if c.instance != nil {
-			if err := c.instance.Close(c.ctx); err != nil {
-				closeErr = fmt.Errorf("water: (*wazero/api.Module).Close returned error: %w", err)
-				return
+			inst := c.instance
+			// Clear the host hooks before closing so an in-flight env dispatch sees
+			// nil (returning ENODEV) rather than a hook into a half-closed
+			// connection, but stay registered until Close returns: the shared
+			// Close drains on the registry, and unregistering early would let it
+			// free the runtime while this worker is still unwinding.
+			if c.shared != nil {
+				c.shared.clearHooks(c)
+			}
+			if err := inst.Close(c.ctx); err != nil {
+				errs = append(errs, fmt.Errorf("water: (*wazero/api.Module).Close returned error: %w", err))
+			}
+			if c.shared != nil {
+				c.shared.unregister(inst)
 			}
 			c.instance = nil // TODO: force dropped
 			log.LDebugf(c.config.Logger(), "INSTANCE DROPPED")
 		}
 
-		if c.runtime != nil {
-			if err := c.runtime.Close(c.ctx); err != nil {
-				closeErr = fmt.Errorf("water: (*wazero.Runtime).Close returned error: %w", err)
-				return
+		// In shared-runtime mode the runtime, compiled module, and env are owned
+		// by the SharedRuntime and reused across dials; only the instance above is
+		// per-connection. Closing them here would tear down the shared runtime.
+		if c.shared == nil {
+			if c.runtime != nil {
+				if err := c.runtime.Close(c.ctx); err != nil {
+					errs = append(errs, fmt.Errorf("water: (*wazero.Runtime).Close returned error: %w", err))
+				}
+				c.runtime = nil // TODO: force dropped
+				log.LDebugf(c.config.Logger(), "RUNTIME DROPPED")
 			}
-			c.runtime = nil // TODO: force dropped
-			log.LDebugf(c.config.Logger(), "RUNTIME DROPPED")
-		}
 
-		if c.module != nil {
-			if err := c.module.Close(c.ctx); err != nil {
-				closeErr = fmt.Errorf("water: (*wazero.CompiledModule).Close returned error: %w", err)
-				return
+			if c.module != nil {
+				if err := c.module.Close(c.ctx); err != nil {
+					errs = append(errs, fmt.Errorf("water: (*wazero.CompiledModule).Close returned error: %w", err))
+				}
+				c.module = nil // TODO: force dropped
+				log.LDebugf(c.config.Logger(), "MODULE DROPPED")
 			}
-			c.module = nil // TODO: force dropped
-			log.LDebugf(c.config.Logger(), "MODULE DROPPED")
+		} else {
+			c.runtime = nil
+			c.module = nil
 		}
+		closeErr = errors.Join(errs...)
+
+		// The finalizer is only a fallback for callers that forget to Close;
+		// leaving it set after Close turns any reference cycle through this core
+		// (e.g. an invoked instance referencing back to it) into an uncollectable
+		// one, since Go never collects a cycle containing a finalizer — leaking
+		// the whole core.
+		runtime.SetFinalizer(c, nil)
 
 		if c.ctxCancel != nil {
 			c.ctxCancel()
@@ -334,6 +400,11 @@ func (c *core) ImportedFunctions() map[string]map[string]api.FunctionDefinition 
 
 // ImportFunction implements Core.
 func (c *core) ImportFunction(module, name string, f any) error {
+	if c.shared != nil {
+		// Shared cores receive host functions from the shared env via SetHostFuncs;
+		// an import recorded here would never be wired.
+		return errors.New("water: ImportFunction is not supported on a shared runtime; use SetHostFuncs")
+	}
 	if c.instance != nil {
 		return fmt.Errorf("water: cannot import function after instantiation")
 	}
@@ -373,10 +444,14 @@ func (c *core) Instantiate() (err error) {
 		return fmt.Errorf("water: double instantiation is not allowed")
 	}
 
-	// Instantiate the imported functions
-	for _, moduleBuilder := range c.importModules {
-		if _, err := moduleBuilder.Instantiate(c.ctx); err != nil {
-			return fmt.Errorf("water: (*wazero.HostModuleBuilder).Instantiate returned error: %w", err)
+	// In shared-runtime mode the env host module is instantiated once on the
+	// shared runtime and dispatched per-instance, so there is nothing per-core
+	// to instantiate here.
+	if c.shared == nil {
+		for _, moduleBuilder := range c.importModules {
+			if _, err := moduleBuilder.Instantiate(c.ctx); err != nil {
+				return fmt.Errorf("water: (*wazero.HostModuleBuilder).Instantiate returned error: %w", err)
+			}
 		}
 	}
 
@@ -404,11 +479,21 @@ func (c *core) Instantiate() (err error) {
 		log.LWarnf(c.config.Logger(), "water: TransportModuleConfig is not set, skipping...")
 	}
 
-	if c.instance, err = c.runtime.InstantiateModule(
-		c.ctx,
-		c.module,
-		c.config.ModuleConfig().GetConfig()); err != nil {
+	moduleConfig := c.config.ModuleConfig().GetConfig()
+	if c.shared != nil {
+		// Many guest instances coexist on the shared runtime, so each needs a
+		// unique store name (the WASM binary's own name would collide).
+		moduleConfig = moduleConfig.WithName(c.instanceName)
+	}
+	if c.instance, err = c.runtime.InstantiateModule(c.ctx, c.module, moduleConfig); err != nil {
 		return fmt.Errorf("water: (*Runtime).InstantiateWithConfig returned error: %w", err)
+	}
+	if c.shared != nil && !c.shared.register(c.instance, c) {
+		// The shared runtime began closing between NewCore and here; abandon this
+		// instance rather than run it against a runtime about to be torn down.
+		_ = c.instance.Close(c.ctx)
+		c.instance = nil
+		return errors.New("water: shared runtime is closing")
 	}
 
 	return nil
@@ -467,6 +552,9 @@ func (c *core) ReadIovs(iovs, iovsLen int32, buf []byte) (n int, err error) {
 
 // WASIPreview1 implements Core.
 func (c *core) WASIPreview1() error {
+	if c.shared != nil {
+		return nil // WASI is instantiated once on the shared runtime
+	}
 	if _, err := wasi_snapshot_preview1.Instantiate(c.ctx, c.runtime); err != nil {
 		return fmt.Errorf("water: wazero/imports/wasi_snapshot_preview1.Instantiate returned error: %w", err)
 	}

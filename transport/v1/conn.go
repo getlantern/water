@@ -37,12 +37,22 @@ type Conn struct {
 	water.UnimplementedConn // embedded to ensure forward compatibility
 }
 
+// closeOnError releases c's core (wazero runtime + WASM linear memory) when
+// *err is non-nil, so a half-built Conn that a setup path never returns to the
+// caller doesn't leak a full core.
+func (c *Conn) closeOnError(err *error) {
+	if *err != nil {
+		c.Close()
+	}
+}
+
 // dialFixed connects to a network address specified bv the WATM.
 func dialFixed(core water.Core) (c water.Conn, err error) {
 	tm := UpgradeCore(core)
 	conn := &Conn{
 		tm: tm,
 	}
+	defer conn.closeOnError(&err)
 
 	dialer := &networkDialer{
 		dialerFunc:       core.Config().NetworkDialerFuncOrDefault(),
@@ -91,6 +101,7 @@ func dial(core water.Core, network, address string) (c water.Conn, err error) {
 	conn := &Conn{
 		tm: tm,
 	}
+	defer conn.closeOnError(&err)
 
 	dialer := &networkDialer{
 		dialerFunc: core.Config().NetworkDialerFuncOrDefault(),
@@ -146,6 +157,7 @@ func accept(core water.Core) (c water.Conn, err error) {
 	conn := &Conn{
 		tm: tm,
 	}
+	defer conn.closeOnError(&err)
 
 	if err = conn.tm.LinkNetworkInterface(nil, core.Config().NetworkListenerOrPanic()); err != nil {
 		return nil, err
@@ -190,6 +202,7 @@ func relay(core water.Core, network, address string) (c water.Conn, err error) {
 	conn := &Conn{
 		tm: tm,
 	}
+	defer conn.closeOnError(&err)
 
 	dialer := &networkDialer{
 		dialerFunc: core.Config().NetworkDialerFuncOrDefault(),
@@ -239,10 +252,13 @@ func (c *Conn) closeOnWorkerError() {
 
 	if err := tm.WaitWorker(); err != nil { // block until worker thread returns
 		log.LErrorf(core.Logger(), "water: WATMv1: worker thread returned with error: %v", err)
-		c.Close()
 	} else {
 		log.LDebugf(core.Logger(), "water: WATMv1: worker thread returned")
 	}
+
+	// A returned worker can process no more data, so close regardless of how it
+	// exited; a clean exit otherwise leaks the core until the caller closes the conn.
+	c.Close()
 }
 
 // Read implements the net.Conn interface.

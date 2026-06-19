@@ -630,7 +630,64 @@ func (tm *TransportModule) Initialize() error {
 	}
 }
 
+// linkShared wires the per-connection dial/accept hooks the shared env module
+// dispatches to. PushConn tracks each conn for cleanup; hooks return ENODEV when
+// no dialer/listener is provided, so an unsupported direction fails cleanly
+// rather than panicking on a nil callback.
+func (tm *TransportModule) linkShared(dialer *networkDialer, listener net.Listener) error {
+	enodev := wasip1.EncodeWATERError(syscall.ENODEV)
+	enotconn := wasip1.EncodeWATERError(syscall.ENOTCONN)
+	push := func(conn net.Conn) int32 {
+		fd, err := tm.PushConn(conn)
+		if err != nil {
+			log.LErrorf(tm.Core().Logger(), "water: PushConn: %v", err)
+		}
+		return fd
+	}
+
+	dial := func(network, address string) int32 { return enodev }
+	dialFixed := func() int32 { return enodev }
+	if dialer != nil {
+		dial = func(network, address string) int32 {
+			conn, err := dialer.Dial(network, address)
+			if err != nil {
+				log.LErrorf(tm.Core().Logger(), "water: dialer.Dial: %v", err)
+				return enotconn
+			}
+			return push(conn)
+		}
+		dialFixed = func() int32 {
+			conn, err := dialer.DialFixed()
+			if err != nil {
+				log.LErrorf(tm.Core().Logger(), "water: dialer.DialFixed: %v", err)
+				return enotconn
+			}
+			return push(conn)
+		}
+	}
+	accept := func() int32 { return enodev }
+	if listener != nil {
+		accept = func() int32 {
+			conn, err := listener.Accept()
+			if err != nil {
+				log.LErrorf(tm.Core().Logger(), "water: listener.Accept: %v", err)
+				return enotconn
+			}
+			return push(conn)
+		}
+	}
+
+	tm.Core().SetHostFuncs(dial, dialFixed, accept)
+	return nil
+}
+
 func (tm *TransportModule) LinkNetworkInterface(dialer *networkDialer, listener net.Listener) error {
+	// Shared-runtime mode: the env host module is shared and dispatches to these
+	// per-connection hooks instead of a per-core env instantiation.
+	if tm.Core().Shared() {
+		return tm.linkShared(dialer, listener)
+	}
+
 	var waterDial func(
 		networkIovs, networkIovsLen int32,
 		addressIovs, addressIovsLen int32,
