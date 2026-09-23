@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 
 	"github.com/refraction-networking/water"
@@ -18,6 +19,7 @@ func init() {
 type FixedDialer struct {
 	config *water.Config
 	ctx    context.Context
+	shared *water.SharedRuntime
 
 	prewarmedMu sync.Mutex
 	prewarmed   water.Core
@@ -26,11 +28,18 @@ type FixedDialer struct {
 }
 
 func NewFixedDialerWithContext(ctx context.Context, c *water.Config, core water.Core) (water.FixedDialer, error) {
-	return &FixedDialer{
+	shared, core, err := adoptShared(ctx, c, core)
+	if err != nil {
+		return nil, err
+	}
+	f := &FixedDialer{
 		config:    c.Clone(),
 		ctx:       ctx,
+		shared:    shared,
 		prewarmed: core,
-	}, nil
+	}
+	runtime.SetFinalizer(f, func(f *FixedDialer) { f.shared.Release() })
+	return f, nil
 }
 
 func (f *FixedDialer) DialFixed() (conn water.Conn, err error) {
@@ -54,10 +63,7 @@ func (f *FixedDialer) DialFixedContext(ctx context.Context) (conn water.Conn, er
 			f.prewarmedMu.Unlock()
 		} else {
 			f.prewarmedMu.Unlock()
-			core, err = water.NewCoreWithContext(ctx, f.config)
-			if err != nil {
-				return
-			}
+			core = f.shared.NewCore(ctx, f.config)
 		}
 
 		conn, err = dialFixed(core)

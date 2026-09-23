@@ -6,6 +6,25 @@ import (
 	"github.com/refraction-networking/water"
 )
 
+// adoptShared returns the shared runtime the default Dialer, FixedDialer,
+// Listener, and Relay instantiate every connection on. A pre-warmed core (the
+// one built to sniff the WATM version) donates its already-compiled module and
+// becomes the first connection's guest; without one, the binary is compiled
+// here.
+func adoptShared(ctx context.Context, c *water.Config, core water.Core) (*water.SharedRuntime, water.Core, error) {
+	if core != nil {
+		if shared, err := water.NewSharedRuntimeFromCore(ctx, core); err == nil {
+			return shared, core, nil
+		}
+		core.Close()
+	}
+	shared, err := water.NewSharedRuntime(ctx, c)
+	if err != nil {
+		return nil, nil, err
+	}
+	return shared, nil, nil
+}
+
 // SharedFixedDialer is a FixedDialer that compiles the WASM module once and
 // reuses one runtime across all dials, instantiating only a fresh guest instance
 // per connection. This avoids the per-dial CompileModule that leaks the

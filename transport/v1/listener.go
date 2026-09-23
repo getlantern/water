@@ -22,6 +22,7 @@ type Listener struct {
 	config *water.Config
 	closed *atomic.Bool
 	ctx    context.Context
+	shared *water.SharedRuntime
 
 	prewarmedMu sync.Mutex
 	prewarmed   water.Core
@@ -46,10 +47,15 @@ func NewListener(c *water.Config) (water.Listener, error) {
 // Call [water.WazeroRuntimeConfigFactory.SetCloseOnContextDone] with false to
 // disable this behavior.
 func NewListenerWithContext(ctx context.Context, c *water.Config, core water.Core) (water.Listener, error) {
+	shared, core, err := adoptShared(ctx, c, core)
+	if err != nil {
+		return nil, err
+	}
 	return &Listener{
 		config:    c.Clone(),
 		closed:    new(atomic.Bool),
 		ctx:       ctx,
+		shared:    shared,
 		prewarmed: core,
 	}, nil
 }
@@ -71,6 +77,9 @@ func (l *Listener) Accept() (net.Conn, error) {
 // Implements [net.Listener].
 func (l *Listener) Close() error {
 	if l.closed.CompareAndSwap(false, true) {
+		// Accepted connections outlive the listener, so release rather than
+		// close: the runtime goes away once the last of them does.
+		defer l.shared.Release()
 		return l.config.NetworkListener.Close()
 	}
 	return nil
@@ -97,7 +106,6 @@ func (l *Listener) AcceptWATER() (water.Conn, error) {
 	}
 
 	var core water.Core
-	var err error
 
 	l.prewarmedMu.Lock()
 	if l.prewarmed != nil {
@@ -106,10 +114,7 @@ func (l *Listener) AcceptWATER() (water.Conn, error) {
 		l.prewarmedMu.Unlock()
 	} else {
 		l.prewarmedMu.Unlock()
-		core, err = water.NewCoreWithContext(l.ctx, l.config)
-		if err != nil {
-			return nil, err
-		}
+		core = l.shared.NewCore(l.ctx, l.config)
 	}
 
 	return accept(core)

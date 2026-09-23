@@ -29,9 +29,11 @@ type SharedRuntime struct {
 	runtime wazero.Runtime
 	module  wazero.CompiledModule
 
-	mu      sync.RWMutex
-	reg     map[api.Module]*core
-	closing bool // set once Close begins; blocks new registrations
+	mu       sync.RWMutex
+	reg      map[api.Module]*core
+	closing  bool // set once Close begins; blocks new registrations
+	released bool // set by Release; the last core to close then closes the runtime
+	cores    int  // cores handed out and not yet closed, instantiated or not
 
 	closeOnce sync.Once
 	closeErr  error
@@ -54,29 +56,80 @@ func (s *SharedRuntime) NewCore(ctx context.Context, config *Config) Core {
 	}
 	c.ctx, c.ctxCancel = context.WithCancel(ctx)
 	c.instanceName = fmt.Sprintf("g%d", s.seq.Add(1))
+	s.mu.Lock()
+	s.cores++
+	s.mu.Unlock()
 	return c
 }
 
 // NewSharedRuntime builds the reusable runtime: WASI and the dispatching env are
 // instantiated once, and the WASM binary is compiled once.
 func NewSharedRuntime(ctx context.Context, config *Config) (*SharedRuntime, error) {
-	s := &SharedRuntime{config: config, reg: make(map[api.Module]*core)}
-	s.runtime = wazero.NewRuntimeWithConfig(ctx, config.RuntimeConfig().GetConfig())
+	runtime := wazero.NewRuntimeWithConfig(ctx, config.RuntimeConfig().GetConfig())
+	module, err := runtime.CompileModule(ctx, config.WATMBinOrPanic())
+	if err != nil {
+		_ = runtime.Close(ctx)
+		return nil, fmt.Errorf("water: CompileModule: %w", err)
+	}
+	s, err := newSharedRuntime(ctx, config, runtime, module)
+	if err != nil {
+		_ = runtime.Close(ctx)
+		return nil, err
+	}
+	return s, nil
+}
 
+// NewSharedRuntimeFromCore builds a SharedRuntime on top of the runtime and
+// compiled module an uninstantiated Core already holds, then converts that Core
+// into the runtime's first guest. This lets a Core created only to sniff the
+// WATM version be reused without compiling the binary a second time.
+//
+// On error the Core is left as it was and still owns its runtime; the caller
+// should Close it.
+func NewSharedRuntimeFromCore(ctx context.Context, c Core) (*SharedRuntime, error) {
+	cc, ok := c.(*core)
+	if !ok || cc.shared != nil || cc.instance != nil || cc.runtime == nil || len(cc.importModules) != 0 {
+		return nil, errors.New("water: core cannot be adopted by a shared runtime")
+	}
+	s, err := newSharedRuntime(ctx, cc.config, cc.runtime, cc.module)
+	if err != nil {
+		return nil, err
+	}
+	cc.shared = s
+	cc.instanceName = fmt.Sprintf("g%d", s.seq.Add(1))
+	s.cores = 1
+	return s, nil
+}
+
+func newSharedRuntime(ctx context.Context, config *Config, runtime wazero.Runtime, module wazero.CompiledModule) (*SharedRuntime, error) {
+	s := &SharedRuntime{
+		config:  config,
+		runtime: runtime,
+		module:  module,
+		reg:     make(map[api.Module]*core),
+	}
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, s.runtime); err != nil {
-		_ = s.runtime.Close(ctx)
 		return nil, fmt.Errorf("water: WASI instantiate: %w", err)
 	}
 	if err := s.instantiateEnv(ctx); err != nil {
-		_ = s.runtime.Close(ctx)
 		return nil, fmt.Errorf("water: env instantiate: %w", err)
 	}
-	var err error
-	if s.module, err = s.runtime.CompileModule(ctx, config.WATMBinOrPanic()); err != nil {
-		_ = s.runtime.Close(ctx)
-		return nil, fmt.Errorf("water: CompileModule: %w", err)
-	}
 	return s, nil
+}
+
+// Release gives up the owner's hold on the runtime. Unlike Close, it never cuts
+// off live connections: the runtime closes immediately if every core it handed
+// out is closed, otherwise when the last one is. Counting cores rather than
+// registered instances matters: a dial in flight holds a core that has not
+// instantiated yet, and closing under it would fail that dial.
+func (s *SharedRuntime) Release() {
+	s.mu.Lock()
+	s.released = true
+	idle := s.cores == 0
+	s.mu.Unlock()
+	if idle {
+		_ = s.Close(context.Background())
+	}
 }
 
 // Close releases the shared runtime. It first marks the runtime closing (so no
@@ -146,6 +199,18 @@ func (s *SharedRuntime) unregister(mod api.Module) {
 	s.mu.Lock()
 	delete(s.reg, mod)
 	s.mu.Unlock()
+}
+
+// coreClosed accounts for a core finishing Close, closing a released runtime
+// once no core is left on it.
+func (s *SharedRuntime) coreClosed() {
+	s.mu.Lock()
+	s.cores--
+	idle := s.released && s.cores == 0
+	s.mu.Unlock()
+	if idle {
+		_ = s.Close(context.Background())
+	}
 }
 
 // hooks returns mod's per-connection host hooks snapshotted under the registry
