@@ -9,7 +9,7 @@ Benchmarks comparing WATER+shadowsocks (WASM) against native shadowsocks (ss-tun
 - **Architecture**: arm64
 - **Go version**: 1.24.0
 - **TinyGo version**: 0.40.1 (WASM build)
-- **WASM runtime**: github.com/getlantern/wazero v1.11.0-water (getlantern/wazero fork)
+- **WASM runtime**: github.com/getlantern/wazero (getlantern/wazero fork): v1.11.0-water for the sections through "Shared Runtime by Default"; v1.11.0-water.2 from "Interpreter Call-Frame Reuse" on
 - **Shadowsocks cipher**: chacha20-ietf-poly1305
 - **Shadowsocks server**: shadowsocks-libev 3.3.5
 - **WASM module**: `shadowsocks_client.wasm` from [getlantern/wateringhole](https://github.com/getlantern/wateringhole)
@@ -318,3 +318,14 @@ Measured with `BenchmarkConnSetupDialer` / `BenchmarkConnSetupListener` (`transp
 | Listener | interpreter | 12.30 ms, 6.48 MiB, 30.3k allocs | 8.33 ms, 1.03 MiB, 24.5k allocs | −32% time, −84% bytes |
 
 The interpreter (the only engine on iOS, where wazero's compiler is disabled) gains less: most of its remaining per-connection cost is the guest's own start-up running under the interpreter, which heap-allocates a `callFrame` on every WASM function call (`internal/engine/interpreter/interpreter.go`, ~24k allocs per connection).
+
+## Interpreter Call-Frame Reuse (wazero v1.11.0-water.2)
+
+`v1.11.0-water.2` (getlantern/wazero#3) makes the interpreter reuse call frames from a per-call-engine free list instead of heap-allocating a `callFrame` on every WASM function call, the per-connection cost noted above. Same benchmarks and settings as the previous section, run against the current `testdata/plain.wasm` (rebuilt with TinyGo 0.40.1; see `transport/v1/testdata/README.md`), so the "before" column differs from the table above:
+
+| Benchmark | Engine | v1.11.0-water | v1.11.0-water.2 | Change |
+|---|---|---|---|---|
+| Dialer | interpreter | 10.77 ms, 712 KiB, 8,649 allocs | 9.33 ms, 519 KiB, 399 allocs | −13% time, −95% allocs |
+| Listener | interpreter | 11.34 ms, 677 KiB, 8,551 allocs | 9.81 ms, 486 KiB, 370 allocs | −13% time, −96% allocs |
+
+The compiler engine doesn't use this code path. What remains of interpreter setup is mostly TinyGo's own runtime initialization running under the interpreter.
