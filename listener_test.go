@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"testing"
 
 	"github.com/refraction-networking/water"
 	_ "github.com/refraction-networking/water/transport/v1"
@@ -66,4 +67,26 @@ func ExampleListener() {
 
 	fmt.Println(string(buf[:n]))
 	// Output: olleh
+}
+
+// ListenContext opens the network listener before building the WATER
+// listener, so a construction failure must close it rather than leak the port.
+func TestListenContextClosesSocketOnError(t *testing.T) {
+	probe, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	probe.Close()
+
+	config := &water.Config{TransportModuleBin: []byte("not a wasm module")}
+	if _, err := config.ListenContext(context.Background(), "tcp", addr); err == nil {
+		t.Fatal("ListenContext should fail for an invalid module")
+	}
+
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("port still held after failed ListenContext: %v", err)
+	}
+	lis.Close()
 }

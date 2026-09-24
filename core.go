@@ -331,6 +331,7 @@ func (c *core) Close() error {
 		} else {
 			c.runtime = nil
 			c.module = nil
+			defer c.shared.coreClosed() // after the rest of teardown, which uses c.ctx
 		}
 		closeErr = errors.Join(errs...)
 

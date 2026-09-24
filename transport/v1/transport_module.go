@@ -253,8 +253,10 @@ func (tm *TransportModule) Cleanup() {
 	tm._dial = nil
 	tm._accept = nil
 	tm._associate = nil
-	tm.backgroundWorker._ctrlpipe = nil
-	tm.backgroundWorker._start = nil
+	if tm.backgroundWorker != nil { // nil when Initialize failed before creating it
+		tm.backgroundWorker._ctrlpipe = nil
+		tm.backgroundWorker._start = nil
+	}
 }
 
 func (tm *TransportModule) Close() error {

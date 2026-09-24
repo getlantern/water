@@ -66,15 +66,14 @@ func (r *Relay) RelayTo(network, address string) error {
 	r.dialNetwork = network
 	r.dialAddress = address
 
-	var core water.Core
-	var err error
-	for r.running.Load() {
-		core, err = water.NewCoreWithContext(r.ctx, r.config)
-		if err != nil {
-			return err
-		}
+	shared, err := water.NewSharedRuntime(r.ctx, r.config)
+	if err != nil {
+		return err
+	}
+	defer shared.Release()
 
-		_, err = relay(core, network, address)
+	for r.running.Load() {
+		_, err = relay(shared.NewCore(r.ctx, r.config), network, address)
 		if err != nil {
 			if r.running.Load() { // errored before closing
 				return err
@@ -109,14 +108,17 @@ func (r *Relay) ListenAndRelayTo(lnetwork, laddress, rnetwork, raddress string) 
 	r.dialNetwork = rnetwork
 	r.dialAddress = raddress
 
-	var core water.Core
-	for r.running.Load() {
-		core, err = water.NewCoreWithContext(r.ctx, r.config)
-		if err != nil {
-			return err
-		}
+	shared, err := water.NewSharedRuntime(r.ctx, r.config)
+	if err != nil {
+		// Close is a no-op once running resets, so nothing else would close the
+		// listener opened above.
+		lis.Close()
+		return err
+	}
+	defer shared.Release()
 
-		_, err = relay(core, rnetwork, raddress)
+	for r.running.Load() {
+		_, err = relay(shared.NewCore(r.ctx, r.config), rnetwork, raddress)
 		if err != nil {
 			if r.running.Load() { // errored before closing
 				return err

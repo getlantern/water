@@ -303,3 +303,18 @@ REMOTE_HOST=<droplet-ip> go test -tags=remote -bench=. -benchmem -benchtime=3s -
 ```
 
 The shadowsocks WASM module is loaded from `../wateringhole/protocols/shadowsocks/v1.0.0/shadowsocks_client.wasm`. Clone [getlantern/wateringhole](https://github.com/getlantern/wateringhole) as a sibling directory and run `git lfs pull`.
+
+## Shared Runtime by Default
+
+The default v1 `Dialer`, `FixedDialer`, `Listener`, and `Relay` now run every connection as a fresh guest instance on one wazero runtime and compiled module, instead of creating a runtime and compiling the WASM binary per connection. The core built to sniff the WATM version donates its compiled module, so the binary is compiled once per dialer/listener.
+
+Measured with `BenchmarkConnSetupDialer` / `BenchmarkConnSetupListener` (`transport/v1/shared_default_test.go`): `plain.wasm`, one long-lived dialer or listener, each iteration = connect + 1-byte echo + close. Apple M4 Pro, Go 1.26.1, `-benchtime=100x -count=6` (a fixed iteration count: each WATER connection opens several loopback socket pairs, and unbounded iterations exhaust macOS ephemeral ports).
+
+| Benchmark | Engine | Before | After | Change |
+|---|---|---|---|---|
+| Dialer | compiler | 11.93 ms, 2.42 MiB, 4,536 allocs | 3.48 ms, 590 KiB, 315 allocs | −71% time, −93% allocs |
+| Dialer | interpreter | 11.46 ms, 6.55 MiB, 31.8k allocs | 9.32 ms, 1.09 MiB, 26.0k allocs | −19% time, −83% bytes |
+| Listener | compiler | 12.75 ms, 2.39 MiB, 4,507 allocs | 4.03 ms, 556 KiB, 285 allocs | −68% time, −94% allocs |
+| Listener | interpreter | 12.30 ms, 6.48 MiB, 30.3k allocs | 8.33 ms, 1.03 MiB, 24.5k allocs | −32% time, −84% bytes |
+
+The interpreter (the only engine on iOS, where wazero's compiler is disabled) gains less: most of its remaining per-connection cost is the guest's own start-up running under the interpreter, which heap-allocates a `callFrame` on every WASM function call (`internal/engine/interpreter/interpreter.go`, ~24k allocs per connection).
