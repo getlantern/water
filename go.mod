@@ -7,7 +7,7 @@ retract (
 	v0.6.0 // bad LICENSE naming
 )
 
-replace github.com/tetratelabs/wazero => github.com/getlantern/wazero v1.11.0-water
+replace github.com/tetratelabs/wazero => github.com/getlantern/wazero v1.11.0-water.2
 
 require (
 	github.com/gaukas/wazerofs v0.1.0
