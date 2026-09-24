@@ -8,8 +8,12 @@ Built 2026-09-23 from `alloc-free-io` @ `4b63fed` (getlantern/watm#2) with
 TinyGo 0.40.1 on Go 1.25.9 and binaryen `wasm-opt` 133:
 
 ```sh
-cd tinygo/v1/examples/plain   # or reverse
-tinygo build -no-debug -target=wasi -tags=purego -o plain.wasm .
+# from the watm checkout; WATER is the path to this water checkout
+for m in plain reverse; do
+  (cd tinygo/v1/examples/$m &&
+    tinygo build -no-debug -target=wasi -tags=purego \
+      -o "$WATER/transport/v1/testdata/$m.wasm" .)
+done
 ```
 
 Rebuild them when the SDK or toolchain changes. Benchmarks and profiles run
