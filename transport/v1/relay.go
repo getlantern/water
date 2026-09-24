@@ -110,6 +110,9 @@ func (r *Relay) ListenAndRelayTo(lnetwork, laddress, rnetwork, raddress string) 
 
 	shared, err := water.NewSharedRuntime(r.ctx, r.config)
 	if err != nil {
+		// Close is a no-op once running resets, so nothing else would close the
+		// listener opened above.
+		lis.Close()
 		return err
 	}
 	defer shared.Release()

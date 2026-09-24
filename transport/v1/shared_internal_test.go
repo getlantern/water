@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	_ "embed"
+	"net"
 	"testing"
 
 	"github.com/refraction-networking/water"
@@ -70,4 +71,29 @@ func TestNilConfigReturnsError(t *testing.T) {
 	if _, err := NewListenerWithContext(ctx, nil, nil); err == nil {
 		t.Error("NewListenerWithContext: want error for nil config")
 	}
+}
+
+// ListenAndRelayTo opens its listener before building the shared runtime, so a
+// runtime failure must close it: Close is a no-op once the relay stops running.
+func TestListenAndRelayToClosesListenerOnError(t *testing.T) {
+	probe, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	probe.Close()
+
+	r, err := NewRelayWithContext(context.Background(), &water.Config{TransportModuleBin: []byte("not a wasm module")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ListenAndRelayTo("tcp", addr, "tcp", "localhost:1"); err == nil {
+		t.Fatal("ListenAndRelayTo should fail for an invalid module")
+	}
+
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("port still held after failed ListenAndRelayTo: %v", err)
+	}
+	lis.Close()
 }
