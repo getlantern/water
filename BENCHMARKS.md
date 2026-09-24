@@ -73,7 +73,7 @@ The inbound path is ~1.4x slower than outbound. The wazero v1.11.0 upgrade signi
 
 ### Known issues
 
-- The `plain.wasm` module (passthrough, no transform) crashes with broken pipe under sustained benchmark load. Only `reverse.wasm` survives benchmarking. This appears to be a bug in the plain WASM module, not in the WATER runtime.
+- The `plain.wasm` module used to crash with broken pipe under sustained benchmark load, leaving only `reverse.wasm` usable for these benchmarks. That was a bug in the stale TinyGo build of the fixture: rebuilt with TinyGo 0.40.1 (see `transport/v1/testdata/README.md`), `plain.wasm` completes the sustained benchmarks.
 - Listener inbound is ~1.4x slower than dialer outbound (asymmetry much reduced in wazero v1.11.0).
 
 ## Android Implications
