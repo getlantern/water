@@ -129,6 +129,10 @@ func NewRelayWithContext(ctx context.Context, c *Config) (Relay, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The core only serves version detection: relay constructors take no core
+	// and build their own runtime, so release this one rather than leave it to
+	// its finalizer.
+	defer core.Close()
 
 	// Search through all exported names and match them to potential
 	// Listener versions.

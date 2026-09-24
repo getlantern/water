@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 
 	"github.com/refraction-networking/water"
@@ -19,6 +20,7 @@ func init() {
 type Dialer struct {
 	config *water.Config
 	ctx    context.Context
+	shared *water.SharedRuntime
 
 	prewarmedMu sync.Mutex
 	prewarmed   water.Core // set at creation, consumed by first DialContext
@@ -39,12 +41,23 @@ func NewDialer(c *water.Config) (water.Dialer, error) {
 // The context is used as the default context for call to [Dialer.Dial].
 // If a non-nil Core is provided, it will be used for the first DialContext call,
 // avoiding the cost of creating a new Core (runtime + module compilation).
+//
+// Every dial runs as a fresh guest instance on one runtime and compiled module
+// shared by the Dialer. Dialer has no Close, so the runtime is released when
+// the Dialer is garbage collected and closes once its last connection does.
 func NewDialerWithContext(ctx context.Context, c *water.Config, core water.Core) (water.Dialer, error) {
-	return &Dialer{
+	shared, core, err := adoptShared(ctx, c, core)
+	if err != nil {
+		return nil, err
+	}
+	d := &Dialer{
 		config:    c.Clone(),
 		ctx:       ctx,
+		shared:    shared,
 		prewarmed: core,
-	}, nil
+	}
+	runtime.SetFinalizer(d, func(d *Dialer) { d.shared.Release() })
+	return d, nil
 }
 
 // Dial dials the network address using the dialerFunc specified in config.
@@ -83,11 +96,12 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (conn
 			d.prewarmedMu.Unlock()
 		} else {
 			d.prewarmedMu.Unlock()
-			core, err = water.NewCoreWithContext(ctx, d.config)
-			if err != nil {
-				return
-			}
+			core = d.shared.NewCore(ctx, d.config)
 		}
+		// Reading d.shared is otherwise this goroutine's last use of d, so its
+		// finalizer could Release the runtime while NewCore is still counting
+		// the new core, closing the runtime under this dial.
+		runtime.KeepAlive(d)
 
 		conn, err = dial(core, network, address)
 	}()

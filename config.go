@@ -167,7 +167,12 @@ func (c *Config) ListenContext(ctx context.Context, network, address string) (Li
 	config := c.Clone()
 	config.NetworkListener = lis
 
-	return NewListenerWithContext(ctx, config)
+	l, err := NewListenerWithContext(ctx, config)
+	if err != nil {
+		lis.Close()
+		return nil, err
+	}
+	return l, nil
 }
 
 func (c *Config) Logger() *log.Logger {
