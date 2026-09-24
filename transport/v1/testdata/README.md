@@ -4,7 +4,7 @@
 `tinygo/v1/examples/reverse` modules from
 [getlantern/watm](https://github.com/getlantern/watm).
 
-Built 2026-09-23 from `alloc-free-io` @ `4b63fed` (getlantern/watm#2) with
+Built 2026-09-24 from `master` @ `ae91e29` (which includes getlantern/watm#2) with
 TinyGo 0.40.1 on Go 1.25.9 and binaryen `wasm-opt` 133:
 
 ```sh
