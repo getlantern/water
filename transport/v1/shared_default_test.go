@@ -116,6 +116,39 @@ func TestDialerGCDuringDial(t *testing.T) {
 	}
 }
 
+// Canceling the context a Dialer was built with ends only the prewarmed
+// connection, whose core inherits it. Connections dialed with their own
+// contexts, and later dials, run on the shared runtime and must be unaffected.
+func TestDialerConstructorCtxCancel(t *testing.T) {
+	echo := startEcho(t)
+	defer echo.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	dialer, err := water.NewDialerWithContext(ctx, &water.Config{TransportModuleBin: wasmPlain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := dialer.DialContext(context.Background(), "tcp", echo.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := dialer.DialContext(context.Background(), "tcp", echo.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	roundtrip(t, second, []byte("survives constructor cancel"))
+	third, err := dialer.DialContext(context.Background(), "tcp", echo.Addr().String())
+	if err != nil {
+		t.Fatalf("dial after constructor cancel: %v", err)
+	}
+	defer third.Close()
+	roundtrip(t, third, []byte("dials after constructor cancel"))
+}
+
 // Every Accept after the first instantiates a new guest on the listener's shared
 // runtime, and closing the listener must not tear down connections it accepted.
 func TestListenerSharedAcceptsAndClose(t *testing.T) {

@@ -65,6 +65,8 @@ func (f *FixedDialer) DialFixedContext(ctx context.Context) (conn water.Conn, er
 			f.prewarmedMu.Unlock()
 			core = f.shared.NewCore(ctx, f.config)
 		}
+		// See the matching KeepAlive in Dialer.DialContext.
+		runtime.KeepAlive(f)
 
 		conn, err = dialFixed(core)
 	}()

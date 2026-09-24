@@ -98,6 +98,10 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (conn
 			d.prewarmedMu.Unlock()
 			core = d.shared.NewCore(ctx, d.config)
 		}
+		// Reading d.shared is otherwise this goroutine's last use of d, so its
+		// finalizer could Release the runtime while NewCore is still counting
+		// the new core, closing the runtime under this dial.
+		runtime.KeepAlive(d)
 
 		conn, err = dial(core, network, address)
 	}()

@@ -79,6 +79,11 @@ func NewSharedRuntime(ctx context.Context, config *Config) (*SharedRuntime, erro
 	return s, nil
 }
 
+// ErrCoreNotAdoptable is returned by NewSharedRuntimeFromCore for a Core that
+// is not an uninstantiated, unshared default Core without functions imported
+// through ImportFunction. Such a Core is left untouched.
+var ErrCoreNotAdoptable = errors.New("water: core cannot be adopted by a shared runtime")
+
 // NewSharedRuntimeFromCore builds a SharedRuntime on top of the runtime and
 // compiled module an uninstantiated Core already holds, then converts that Core
 // into the runtime's first guest. This lets a Core created only to sniff the
@@ -89,7 +94,7 @@ func NewSharedRuntime(ctx context.Context, config *Config) (*SharedRuntime, erro
 func NewSharedRuntimeFromCore(ctx context.Context, c Core) (*SharedRuntime, error) {
 	cc, ok := c.(*core)
 	if !ok || cc.shared != nil || cc.instance != nil || cc.runtime == nil || len(cc.importModules) != 0 {
-		return nil, errors.New("water: core cannot be adopted by a shared runtime")
+		return nil, ErrCoreNotAdoptable
 	}
 	s, err := newSharedRuntime(ctx, cc.config, cc.runtime, cc.module)
 	if err != nil {

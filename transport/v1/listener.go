@@ -77,6 +77,15 @@ func (l *Listener) Accept() (net.Conn, error) {
 // Implements [net.Listener].
 func (l *Listener) Close() error {
 	if l.closed.CompareAndSwap(false, true) {
+		// A prewarmed core no Accept claimed still counts against the runtime,
+		// so close it or Release could never close the runtime.
+		l.prewarmedMu.Lock()
+		unused := l.prewarmed
+		l.prewarmed = nil
+		l.prewarmedMu.Unlock()
+		if unused != nil {
+			unused.Close()
+		}
 		// Accepted connections outlive the listener, so release rather than
 		// close: the runtime goes away once the last of them does.
 		defer l.shared.Release()

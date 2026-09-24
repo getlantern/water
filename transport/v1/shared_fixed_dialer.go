@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"errors"
 
 	"github.com/refraction-networking/water"
 )
@@ -10,19 +11,34 @@ import (
 // Listener, and Relay instantiate every connection on. A pre-warmed core (the
 // one built to sniff the WATM version) donates its already-compiled module and
 // becomes the first connection's guest; without one, the binary is compiled
-// here.
+// here. A core that cannot be adopted, such as one with functions imported
+// through ImportFunction, keeps its own runtime and still serves the first
+// connection.
 func adoptShared(ctx context.Context, c *water.Config, core water.Core) (*water.SharedRuntime, water.Core, error) {
+	if c == nil {
+		if core != nil {
+			core.Close()
+		}
+		return nil, nil, errors.New("water: nil config is not allowed")
+	}
 	if core != nil {
-		if shared, err := water.NewSharedRuntimeFromCore(ctx, core); err == nil {
+		shared, err := water.NewSharedRuntimeFromCore(ctx, core)
+		if err == nil {
 			return shared, core, nil
 		}
-		core.Close()
+		if !errors.Is(err, water.ErrCoreNotAdoptable) {
+			core.Close()
+			return nil, nil, err
+		}
 	}
 	shared, err := water.NewSharedRuntime(ctx, c)
 	if err != nil {
+		if core != nil {
+			core.Close()
+		}
 		return nil, nil, err
 	}
-	return shared, nil, nil
+	return shared, core, nil
 }
 
 // SharedFixedDialer is a FixedDialer that compiles the WASM module once and
