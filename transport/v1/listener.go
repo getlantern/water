@@ -116,15 +116,21 @@ func (l *Listener) AcceptWATER() (water.Conn, error) {
 
 	var core water.Core
 
+	// Recheck closed and count the new core under prewarmedMu: Close takes it
+	// before releasing the runtime, so either this accept sees the close or its
+	// core is counted and keeps the runtime open.
 	l.prewarmedMu.Lock()
+	if l.closed.Load() {
+		l.prewarmedMu.Unlock()
+		return nil, fmt.Errorf("water: listener is closed")
+	}
 	if l.prewarmed != nil {
 		core = l.prewarmed
 		l.prewarmed = nil
-		l.prewarmedMu.Unlock()
 	} else {
-		l.prewarmedMu.Unlock()
 		core = l.shared.NewCore(l.ctx, l.config)
 	}
+	l.prewarmedMu.Unlock()
 
 	return accept(core)
 }
